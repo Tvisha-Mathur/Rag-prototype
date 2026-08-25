@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import BackgroundTasks, FastAPI, HTTPException, status
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -102,6 +102,10 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# One Render worker owns these short-lived states. Completed workflow data is
+# persisted to MongoDB by the background task.
+analysis_jobs: dict[str, dict[str, Any]] = {}
 
 app.add_middleware(
     CORSMiddleware,
@@ -206,6 +210,52 @@ def start_incident_workflow(
     )
     persist_workflow_session(workflow, session_id)
     return response
+
+
+def process_incident_workflow_job(session_id: str) -> None:
+    """Run long incident analysis after the start response is returned."""
+
+    workflow: IncidentWorkflow = app.state.workflow
+    analyzer = getattr(app.state, "analyzer", None)
+    try:
+        response = workflow.process_current_step(
+            session_id=session_id,
+            analyzer=analyzer,
+        )
+        persist_workflow_session(workflow, session_id)
+        analysis_jobs[session_id] = {"status": "completed", "result": response}
+    except Exception as exc:
+        print(f"Background incident analysis failed for {session_id}: {exc}")
+        analysis_jobs[session_id] = {"status": "failed", "error": str(exc)}
+
+
+@app.post("/incident/workflow/start-async", status_code=status.HTTP_202_ACCEPTED)
+def start_incident_workflow_async(
+    request: StartIncidentRequest,
+    background_tasks: BackgroundTasks,
+) -> dict[str, str]:
+    """Create a workflow immediately and process it in the background."""
+
+    incident_text = request.incident_text.strip()
+    if not incident_text:
+        raise HTTPException(status_code=400, detail="Incident narrative cannot be empty.")
+
+    workflow: IncidentWorkflow = app.state.workflow
+    session = workflow.create_session(incident_text)
+    session_id = session["session_id"]
+    analysis_jobs[session_id] = {"status": "processing"}
+    background_tasks.add_task(process_incident_workflow_job, session_id)
+    return {"session_id": session_id, "status": "processing"}
+
+
+@app.get("/incident/workflow/{session_id}/status")
+def get_incident_workflow_job_status(session_id: str) -> dict[str, Any]:
+    """Return background-analysis progress without a long HTTP connection."""
+
+    job = analysis_jobs.get(session_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Analysis job was not found.")
+    return {"session_id": session_id, **job}
 
 
 # ============================================================

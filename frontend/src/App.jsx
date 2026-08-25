@@ -67,11 +67,30 @@ function App() {
     setError('');
     setCompleted(false);
     try {
-      const { data } = await api.post('/incident/workflow/start', form);
-      setSessionId(data.session_id);
-      applyResponse(data);
+      const { data: started } = await api.post('/incident/workflow/start-async', form);
+      setSessionId(started.session_id);
+
+      let finished = null;
+      for (let attempt = 0; attempt < 150; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const { data: job } = await api.get(
+          `/incident/workflow/${started.session_id}/status`,
+        );
+        if (job.status === 'failed') {
+          throw new Error(job.error || 'Incident analysis failed.');
+        }
+        if (job.status === 'completed') {
+          finished = job.result;
+          break;
+        }
+      }
+
+      if (!finished) {
+        throw new Error('Incident analysis is still processing after five minutes.');
+      }
+      applyResponse(finished);
     } catch (err) {
-      setError(apiErrorMessage(err, 'Unable to start the workflow.'));
+      setError(err.response ? apiErrorMessage(err, 'Unable to start the workflow.') : err.message);
     } finally {
       setLoading(false);
     }

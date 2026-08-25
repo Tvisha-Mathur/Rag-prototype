@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen3:4b"
     ollama_timeout_seconds: int = 120
+    ollama_fallback_enabled: bool = True
     agentic_retrieval_enabled: bool = True
     agentic_retrieval_max_queries: int = 3
     embedding_provider: str = "local"

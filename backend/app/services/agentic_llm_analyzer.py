@@ -171,10 +171,36 @@ class GeminiAgenticAnalyzer:
             return schema.model_validate(parsed)
         return schema.model_validate_json(response.text)
 
-    @staticmethod
-    def _report_failure(stage: str, exc: Exception) -> None:
+    def _report_failure(self, stage: str, exc: Exception) -> None:
         if not isinstance(exc, CloudCircuitOpenError):
-            print(f"Gemini {stage} failed; using Ollama: {exc}")
+            fallback_name = (
+                "Ollama" if settings.ollama_fallback_enabled
+                else "deterministic rules"
+            )
+            print(f"Gemini {stage} failed; using {fallback_name}: {exc}")
+
+    @staticmethod
+    def _deterministic_features(incident_text: str) -> dict[str, Any]:
+        from backend.app.services.hipo_classifier import HipoClassifier
+
+        return HipoClassifier.fallback_features(incident_text)
+
+    @staticmethod
+    def _deterministic_scoring_facts(incident_text: str) -> dict[str, Any]:
+        from backend.app.services.hipo_classifier import HipoClassifier
+
+        return HipoClassifier.fallback_scoring_facts(incident_text)
+
+    @staticmethod
+    def _deterministic_assessment() -> dict[str, Any]:
+        from backend.app.services.hipo_classifier import HipoClassifier
+
+        return HipoClassifier.fallback_assessment()
+
+    def normalize_incident_for_retrieval(self, incident_text: str) -> str:
+        if settings.ollama_fallback_enabled:
+            return self.fallback.normalize_incident_for_retrieval(incident_text)
+        return " ".join(incident_text.split())
 
     @staticmethod
     def _is_transient_error(exc: Exception) -> bool:
@@ -202,7 +228,11 @@ Incident: {incident}\nNormalized incident: {normalized}""",
             return list(result.queries)[:max_queries]  # type: ignore[attr-defined]
         except Exception as exc:
             self._report_failure("query planning", exc)
-            return self.fallback.plan_retrieval_queries(incident_text, normalized_incident, max_queries=max_queries)
+            if settings.ollama_fallback_enabled:
+                return self.fallback.plan_retrieval_queries(
+                    incident_text, normalized_incident, max_queries=max_queries
+                )
+            return [normalized_incident]
 
     def extract_hipo_features(self, incident_text: str) -> dict[str, Any]:
         try:
@@ -216,7 +246,9 @@ under only a slight change; otherwise return null. Incident: {incident}""",
             return result.model_dump()
         except Exception as exc:
             self._report_failure("feature extraction", exc)
-            return self.fallback.extract_hipo_features(incident_text)
+            if settings.ollama_fallback_enabled:
+                return self.fallback.extract_hipo_features(incident_text)
+            return self._deterministic_features(incident_text)
 
     def extract_hipo_scoring_facts(self, incident_text: str) -> dict[str, Any]:
         try:
@@ -239,8 +271,12 @@ Incident: {incident}""",
             return output
         except Exception as exc:
             self._report_failure("HIPO fact extraction", exc)
-            output = self.fallback.extract_hipo_scoring_facts(incident_text)
-            output["_provider"] = "ollama"
+            if settings.ollama_fallback_enabled:
+                output = self.fallback.extract_hipo_scoring_facts(incident_text)
+                output["_provider"] = "ollama"
+            else:
+                output = self._deterministic_scoring_facts(incident_text)
+                output["_provider"] = "deterministic_fallback"
             return output
 
     def grade_retrieval_evidence(self, incident_text: str, features: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
@@ -280,8 +316,12 @@ Incident: {incident}\nFeatures: {features}\nEvidence: {evidence}""",
             return output
         except Exception as exc:
             self._report_failure("HIPO scoring", exc)
-            output = self.fallback.classify_hipo(incident_text, features, evidence)
-            output["_provider"] = "ollama"
+            if settings.ollama_fallback_enabled:
+                output = self.fallback.classify_hipo(incident_text, features, evidence)
+                output["_provider"] = "ollama"
+            else:
+                output = self._deterministic_assessment()
+                output["_provider"] = "deterministic_fallback"
             return output
 
     def verify_hipo_scores(
@@ -322,7 +362,11 @@ Incident: {incident}\nNormalized: {normalized}\nCandidates: {candidates}""",
             return result.candidate_id  # type: ignore[attr-defined]
         except Exception as exc:
             self._report_failure("taxonomy selection", exc)
-            return self.fallback.select_taxonomy_candidate(incident_text, normalized_incident, candidates)
+            if settings.ollama_fallback_enabled:
+                return self.fallback.select_taxonomy_candidate(
+                    incident_text, normalized_incident, candidates
+                )
+            return str(candidates[0]["candidate_id"])
 
 
 def build_agentic_analyzer() -> GeminiAgenticAnalyzer:

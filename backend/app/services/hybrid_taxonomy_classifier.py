@@ -10,8 +10,6 @@ import re
 from collections import Counter, defaultdict
 from typing import Any
 
-from sentence_transformers import CrossEncoder
-
 from backend.app.config import settings
 
 
@@ -30,7 +28,7 @@ class HybridTaxonomyClassifier:
         self.retriever = retriever
         self.llm_analyzer = llm_analyzer
         self._taxonomy_documents: list[dict[str, Any]] | None = None
-        self._cross_encoder: CrossEncoder | None = None
+        self._cross_encoder: Any | None = None
 
     @staticmethod
     def _tokens(text: str) -> list[str]:
@@ -149,6 +147,10 @@ class HybridTaxonomyClassifier:
             return []
         try:
             if self._cross_encoder is None:
+                # Import only for local deployments. Hosted Render instances use
+                # RRF order and never load sentence-transformers/PyTorch.
+                from sentence_transformers import CrossEncoder
+
                 self._cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
             pairs = [(query, str(item.get("search_text") or "")) for item in candidates]
             scores = self._cross_encoder.predict(pairs)
@@ -216,7 +218,11 @@ class HybridTaxonomyClassifier:
             float(fused[0].get("rrf_score", 0)) / max(float(fused[1].get("rrf_score", 0)), 1e-9)
             if len(fused) > 1 else float("inf")
         )
-        reranker_skipped = fusion_ratio >= self.FUSION_DOMINANCE_RATIO
+        hosted_embeddings = settings.embedding_provider.strip().casefold() == "huggingface"
+        reranker_skipped = (
+            hosted_embeddings
+            or fusion_ratio >= self.FUSION_DOMINANCE_RATIO
+        )
         ranked = fused if reranker_skipped else self._rerank(normalized, fused)
         top_candidates = ranked[: self.FINAL_CANDIDATES]
         if not top_candidates:

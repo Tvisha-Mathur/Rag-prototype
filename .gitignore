@@ -1,0 +1,9 @@
+﻿# Purpose: Excludes generated, local, secret, and cache files from version control. Used automatically by Git.
+__pycache__/
+*.py[cod]
+*.log
+.venv/
+.env
+.pytest_cache/
+frontend/node_modules/
+frontend/dist/

@@ -130,6 +130,7 @@ def health() -> dict[str, Any]:
         "status": "healthy" if retriever is not None else "degraded",
         "application": "flexicore-incident-rag-prototype",
         "retriever_ready": retriever is not None,
+        "embedding_provider": settings.embedding_provider,
         "agent_framework": "llamaindex",
         "agentic_model": getattr(agent, "model", settings.ollama_model),
         "cloud_agent_ready": bool(getattr(agent, "cloud_available", False)),

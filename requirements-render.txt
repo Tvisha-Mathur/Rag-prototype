@@ -1,0 +1,18 @@
+# Purpose: Minimal production dependencies for the memory-constrained Render API.
+# The hosted embedding provider replaces sentence-transformers/PyTorch at runtime.
+
+fastapi==0.115.0
+google-genai==2.19.0
+huggingface-hub==1.28.0
+llama-index-core==0.14.24
+llama-index-llms-google-genai==0.10.0
+numpy==2.5.1
+ollama==0.6.2
+openpyxl==3.1.5
+pandas==3.0.5
+pydantic==2.13.4
+pydantic-settings==2.14.2
+pymongo==4.17.0
+python-dotenv==1.2.2
+PyYAML==6.0.3
+uvicorn==0.30.6

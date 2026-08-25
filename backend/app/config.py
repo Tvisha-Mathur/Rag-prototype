@@ -22,7 +22,11 @@ class Settings(BaseSettings):
     ollama_timeout_seconds: int = 120
     agentic_retrieval_enabled: bool = True
     agentic_retrieval_max_queries: int = 3
+    embedding_provider: str = "local"
     embedding_local_files_only: bool = True
+    huggingface_api_token: str | None = None
+    huggingface_embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    huggingface_embedding_timeout_seconds: int = 30
     hipo_profile_short_circuit_enabled: bool = False
 
     gemini_agent_enabled: bool = True

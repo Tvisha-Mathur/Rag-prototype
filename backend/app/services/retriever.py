@@ -12,7 +12,6 @@ from typing import Any
 from pymongo import MongoClient
 from pymongo.collection import Collection
 from pymongo.errors import PyMongoError
-from sentence_transformers import SentenceTransformer
 
 from backend.app.config import settings
 
@@ -38,12 +37,46 @@ class RetrieverService:
     """Retrieve semantically relevant knowledge from MongoDB Atlas."""
 
     def __init__(self) -> None:
-        print(f"Loading retriever model: {MODEL_NAME}")
+        provider = settings.embedding_provider.strip().casefold()
+        self.model: Any | None = None
+        self.embedding_client: Any | None = None
 
-        self.model = SentenceTransformer(
-            MODEL_NAME,
-            local_files_only=settings.embedding_local_files_only,
-        )
+        if provider == "huggingface":
+            if not settings.huggingface_api_token:
+                raise RuntimeError(
+                    "HUGGINGFACE_API_TOKEN is required when "
+                    "EMBEDDING_PROVIDER=huggingface."
+                )
+
+            # Keep this import inside the hosted branch so Render never imports
+            # sentence-transformers/PyTorch on its memory-constrained instance.
+            from huggingface_hub import InferenceClient
+
+            self.embedding_client = InferenceClient(
+                provider="hf-inference",
+                api_key=settings.huggingface_api_token,
+                timeout=settings.huggingface_embedding_timeout_seconds,
+            )
+            self.embedding_provider = "huggingface"
+            print(
+                "Using hosted retriever model: "
+                f"{settings.huggingface_embedding_model}"
+            )
+        elif provider == "local":
+            # Lazy import preserves the existing local model while preventing
+            # PyTorch from being loaded by hosted deployments.
+            from sentence_transformers import SentenceTransformer
+
+            print(f"Loading local retriever model: {MODEL_NAME}")
+            self.model = SentenceTransformer(
+                MODEL_NAME,
+                local_files_only=settings.embedding_local_files_only,
+            )
+            self.embedding_provider = "local"
+        else:
+            raise ValueError(
+                "EMBEDDING_PROVIDER must be either 'local' or 'huggingface'."
+            )
         self._cache_lock = RLock()
         self._embedding_cache: OrderedDict[str, list[float]] = OrderedDict()
         self._retrieval_cache: OrderedDict[tuple[Any, ...], list[dict[str, Any]]] = OrderedDict()
@@ -96,16 +129,31 @@ class RetrieverService:
                 self._embedding_cache.move_to_end(cache_key)
                 return list(cached)
 
-        embedding = self.model.encode(
-            cleaned_query,
-            normalize_embeddings=True,
-        ).tolist()
+        if self.embedding_provider == "huggingface":
+            result = self.embedding_client.feature_extraction(
+                cleaned_query,
+                model=settings.huggingface_embedding_model,
+                normalize=True,
+            )
+            embedding = result.tolist() if hasattr(result, "tolist") else list(result)
+            if (
+                len(embedding) == 1
+                and isinstance(embedding[0], list)
+            ):
+                embedding = embedding[0]
+        else:
+            embedding = self.model.encode(
+                cleaned_query,
+                normalize_embeddings=True,
+            ).tolist()
 
         if len(embedding) != EMBEDDING_DIMENSIONS:
             raise ValueError(
                 f"Expected {EMBEDDING_DIMENSIONS} dimensions, "
                 f"received {len(embedding)}."
             )
+
+        embedding = [float(value) for value in embedding]
 
         with self._cache_lock:
             self._embedding_cache[cache_key] = embedding

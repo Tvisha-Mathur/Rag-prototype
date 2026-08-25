@@ -107,6 +107,44 @@ app = FastAPI(
 # persisted to MongoDB by the background task.
 analysis_jobs: dict[str, dict[str, Any]] = {}
 
+
+def save_analysis_job(session_id: str, job: dict[str, Any]) -> None:
+    """Persist background-job state so Render restarts do not lose it."""
+
+    analysis_jobs[session_id] = dict(job)
+    retriever = getattr(app.state, "retriever", None)
+    if retriever is None:
+        return
+    retriever.collection.database["analysis_jobs"].update_one(
+        {"session_id": session_id},
+        {
+            "$set": {**job, "updated_at": datetime.now(timezone.utc)},
+            "$setOnInsert": {
+                "session_id": session_id,
+                "created_at": datetime.now(timezone.utc),
+            },
+        },
+        upsert=True,
+    )
+
+
+def load_analysis_job(session_id: str) -> dict[str, Any] | None:
+    """Load job state from memory, falling back to MongoDB."""
+
+    job = analysis_jobs.get(session_id)
+    if job is not None:
+        return dict(job)
+    retriever = getattr(app.state, "retriever", None)
+    if retriever is None:
+        return None
+    stored = retriever.collection.database["analysis_jobs"].find_one(
+        {"session_id": session_id},
+        {"_id": 0, "session_id": 0, "created_at": 0, "updated_at": 0},
+    )
+    if stored is not None:
+        analysis_jobs[session_id] = dict(stored)
+    return stored
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -223,10 +261,10 @@ def process_incident_workflow_job(session_id: str) -> None:
             analyzer=analyzer,
         )
         persist_workflow_session(workflow, session_id)
-        analysis_jobs[session_id] = {"status": "completed", "result": response}
+        save_analysis_job(session_id, {"status": "completed", "result": response})
     except Exception as exc:
         print(f"Background incident analysis failed for {session_id}: {exc}")
-        analysis_jobs[session_id] = {"status": "failed", "error": str(exc)}
+        save_analysis_job(session_id, {"status": "failed", "error": str(exc)})
 
 
 @app.post("/incident/workflow/start-async", status_code=status.HTTP_202_ACCEPTED)
@@ -243,7 +281,8 @@ def start_incident_workflow_async(
     workflow: IncidentWorkflow = app.state.workflow
     session = workflow.create_session(incident_text)
     session_id = session["session_id"]
-    analysis_jobs[session_id] = {"status": "processing"}
+    persist_workflow_session(workflow, session_id)
+    save_analysis_job(session_id, {"status": "processing"})
     background_tasks.add_task(process_incident_workflow_job, session_id)
     return {"session_id": session_id, "status": "processing"}
 
@@ -252,7 +291,7 @@ def start_incident_workflow_async(
 def get_incident_workflow_job_status(session_id: str) -> dict[str, Any]:
     """Return background-analysis progress without a long HTTP connection."""
 
-    job = analysis_jobs.get(session_id)
+    job = load_analysis_job(session_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Analysis job was not found.")
     return {"session_id": session_id, **job}

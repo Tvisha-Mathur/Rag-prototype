@@ -71,11 +71,24 @@ function App() {
       setSessionId(started.session_id);
 
       let finished = null;
+      let consecutivePollFailures = 0;
       for (let attempt = 0; attempt < 150; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
-        const { data: job } = await api.get(
-          `/incident/workflow/${started.session_id}/status`,
-        );
+        let job;
+        try {
+          const response = await api.get(
+            `/incident/workflow/${started.session_id}/status`,
+          );
+          job = response.data;
+          consecutivePollFailures = 0;
+        } catch (pollError) {
+          // Render free services can briefly return 502/503 while waking or
+          // restarting. Keep polling the persisted MongoDB job instead of
+          // discarding an otherwise valid analysis after one transient error.
+          consecutivePollFailures += 1;
+          if (consecutivePollFailures < 10) continue;
+          throw pollError;
+        }
         if (job.status === 'failed') {
           throw new Error(job.error || 'Incident analysis failed.');
         }

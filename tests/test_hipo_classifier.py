@@ -465,6 +465,74 @@ def test_explicit_no_narrow_avoidance_overrides_phrase_keyword():
     assert resolved["likelihood_of_more_severe_outcome"]["score"] == 3
 
 
+@pytest.mark.parametrize(
+    ("narrative", "profile", "expected_scores"),
+    [
+        (
+            "A newly hired worker attempted an unfamiliar hazardous task without full training. "
+            "A person had been directly exposed to the hazard moments before control was restored.",
+            "untrained_worker_hazardous_task",
+            (4, 1, 2, 1, 4),
+        ),
+        (
+            "Industrial equipment behaved unexpectedly while an employee was nearby. "
+            "A person had been directly exposed to the hazard moments before control was restored.",
+            "unexpected_equipment_person_nearby",
+            (4, 3, 3, 1, 4),
+        ),
+        (
+            "A hotel vehicle carried passengers while the driver committed a serious road-safety violation. "
+            "A person had been directly exposed to the hazard moments before control was restored.",
+            "passenger_vehicle_safety_violation",
+            (4, 3, 2, 3, 4),
+        ),
+        (
+            "Guests were forced into an active vehicle path because the designated pedestrian route was obstructed. "
+            "A person had been directly exposed to the hazard moments before control was restored.",
+            "pedestrian_forced_into_vehicle_path",
+            (4, 1, 2, 2, 4),
+        ),
+    ],
+)
+def test_grounded_major_safety_profiles(narrative, profile, expected_scores):
+    assessment = Analyzer().classify_hipo(None, None, None)
+
+    resolved, selected_profile, evidence, _corrections = (
+        HipoClassifier._apply_event_profile_constraints(assessment, narrative)
+    )
+
+    assert selected_profile == profile
+    assert evidence
+    safety, assets, continuity, reputation, likelihood = expected_scores
+    assert resolved["safety_impact"]["score"] == safety
+    assert resolved["damage_to_assets"]["score"] == assets
+    assert resolved["business_continuity"]["score"] == continuity
+    assert resolved["reputational_impact"]["score"] == reputation
+    assert resolved["likelihood_of_more_severe_outcome"]["score"] == likelihood
+
+
+@pytest.mark.parametrize(
+    "narrative",
+    [
+        "A newly hired worker attended a fully supervised training demonstration.",
+        "Industrial equipment was inspected while isolated and no person was nearby.",
+        "An empty hotel vehicle was parked after a routine inspection.",
+        "Guests used the designated pedestrian route without obstruction.",
+    ],
+)
+def test_major_safety_profiles_require_incident_mechanism(narrative):
+    assessment = Analyzer().classify_hipo(None, None, None)
+
+    resolved, profile, evidence, corrections = HipoClassifier._apply_event_profile_constraints(
+        assessment, narrative
+    )
+
+    assert profile is None
+    assert evidence == []
+    assert corrections == []
+    assert resolved == assessment
+
+
 def test_complete_profile_short_circuit_needs_no_retrieval_or_model_calls(monkeypatch):
     monkeypatch.setattr(
         "backend.app.services.hipo_classifier.settings.hipo_profile_short_circuit_enabled",

@@ -376,6 +376,35 @@ class IncidentWorkflow:
             for matched, routed_subdomain in ohs_routes:
                 if matched and is_approved_pair(ohs_domain, routed_subdomain):
                     return ohs_domain, routed_subdomain
+            canonical_routes = (
+                (
+                    bool(re.search(
+                        r"\bhotel\s+property\b.*\b(?:damaged|removed)\b.*\b(?:unidentified|unknown)\s+person\b",
+                        text,
+                    )),
+                    "Physical Security",
+                    "Theft and Vandalism",
+                ),
+                (
+                    bool(re.search(
+                        r"\b(?:security\s+)?cameras?\b.*\b(?:stopped|failed|ceased)\b.*\b(?:recording|functioning)\b",
+                        text,
+                    )),
+                    "Physical Security",
+                    "Surveillance Systems",
+                ),
+                (
+                    bool(re.search(
+                        r"\b(?:hotel\s+)?vehicle\b.*\bpassengers?\b.*\b(?:serious\s+)?road[-\s]safety\s+violation\b",
+                        text,
+                    )),
+                    "Road Safety",
+                    "Speeding & Safety Equipment Violations",
+                ),
+            )
+            for matched, routed_domain, routed_subdomain in canonical_routes:
+                if matched and is_approved_pair(routed_domain, routed_subdomain):
+                    return routed_domain, routed_subdomain
             routes = (
                 (
                     bool(re.search(r"\bguest\b.*\b(?:personal item|property)\b.*\b(?:missing|stolen|theft|lost)\b", text)),

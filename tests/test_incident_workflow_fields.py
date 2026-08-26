@@ -62,21 +62,24 @@ def test_taxonomy_text_uses_only_the_initiating_event():
 
 def test_event_routes_override_unrelated_semantic_taxonomy_candidate():
     approved = {
-        "Guest Medical Emergency",
-        "Guest Slip, Trip & Fall",
-        "Safety Incidents Involving Guests",
-        "Theft or Loss of Guest Property",
-        "Guest Complaints",
-        "Fraudulent Activities by Guests",
-        "Missing Person",
-        "Fatigue Management",
+        ("Guest-Related Incidents", "Guest Medical Emergency"),
+        ("Guest-Related Incidents", "Guest Slip, Trip & Fall"),
+        ("Guest-Related Incidents", "Safety Incidents Involving Guests"),
+        ("Guest-Related Incidents", "Theft or Loss of Guest Property"),
+        ("Guest-Related Incidents", "Guest Complaints"),
+        ("Guest-Related Incidents", "Fraudulent Activities by Guests"),
+        ("Guest-Related Incidents", "Missing Person"),
+        ("Occupational Health and Safety", "Fatigue Management"),
+        ("Physical Security", "Theft and Vandalism"),
+        ("Physical Security", "Surveillance Systems"),
+        ("Road Safety", "Speeding & Safety Equipment Violations"),
     }
 
     class TaxonomyCollection:
         def find_one(self, query, _projection):
             if (
                 query.get("chunk_type") == "taxonomy"
-                and query.get("subdomain") in approved
+                and (query.get("domain"), query.get("subdomain")) in approved
                 and query.get("active") is True
             ):
                 return {"_id": 1}
@@ -121,6 +124,29 @@ def test_event_routes_override_unrelated_semantic_taxonomy_candidate():
         "domain": "Occupational Health and Safety",
         "subdomain": "Fatigue Management",
     }
+
+    canonical_cases = (
+        (
+            "Hotel property was damaged or removed by an unidentified person.",
+            "Physical Security",
+            "Theft and Vandalism",
+        ),
+        (
+            "A group of security cameras stopped recording for a limited period.",
+            "Physical Security",
+            "Surveillance Systems",
+        ),
+        (
+            "A hotel vehicle carried passengers while the driver committed a serious road-safety violation.",
+            "Road Safety",
+            "Speeding & Safety Equipment Violations",
+        ),
+    )
+    for narrative, expected_domain, expected_subdomain in canonical_cases:
+        assert workflow._build_taxonomy_result(narrative, Analyzer()) == {
+            "domain": expected_domain,
+            "subdomain": expected_subdomain,
+        }
 
 
 def test_unapproved_taxonomy_candidate_never_reaches_workflow_result():

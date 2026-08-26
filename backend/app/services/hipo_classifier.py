@@ -623,6 +623,42 @@ class HipoClassifier:
                 "damage_to_assets": 2, "reputational_impact": 1,
                 "likelihood_of_more_severe_outcome": 4 if close_exposure else 3,
             })
+        elif re.search(
+            r"\b(?:newly\s+hired|new|young)\s+worker\b.*\b(?:unfamiliar\s+)?hazardous\s+task\b.*\b(?:without|lacked?)\b.*\b(?:full\s+)?training\b",
+            event,
+        ):
+            select("untrained_worker_hazardous_task", event, {
+                "safety_impact": 4, "business_continuity": 2,
+                "damage_to_assets": 1, "reputational_impact": 1,
+                "likelihood_of_more_severe_outcome": 4 if close_exposure else 3,
+            })
+        elif re.search(
+            r"\b(?:industrial\s+)?equipment\b.*\b(?:behaved\s+unexpectedly|malfunctioned|unexpected\s+(?:movement|operation))\b.*\b(?:employee|worker|person)\b.*\bnearby\b",
+            event,
+        ):
+            select("unexpected_equipment_person_nearby", event, {
+                "safety_impact": 4, "business_continuity": 3,
+                "damage_to_assets": 3, "reputational_impact": 1,
+                "likelihood_of_more_severe_outcome": 4 if close_exposure else 3,
+            })
+        elif re.search(
+            r"\b(?:hotel\s+)?vehicle\b.*\bpassengers?\b.*\b(?:serious\s+)?road[-\s]safety\s+violation\b",
+            event,
+        ):
+            select("passenger_vehicle_safety_violation", event, {
+                "safety_impact": 4, "business_continuity": 2,
+                "damage_to_assets": 3, "reputational_impact": 3,
+                "likelihood_of_more_severe_outcome": 4 if close_exposure else 3,
+            })
+        elif re.search(
+            r"\b(?:guests?|pedestrians?|people|persons?)\b.*\bforced\b.*\bactive\s+vehicle\s+path\b.*\b(?:pedestrian\s+)?route\b.*\bobstructed\b",
+            event,
+        ):
+            select("pedestrian_forced_into_vehicle_path", event, {
+                "safety_impact": 4, "business_continuity": 2,
+                "damage_to_assets": 1, "reputational_impact": 2,
+                "likelihood_of_more_severe_outcome": 4 if close_exposure else 3,
+            })
         elif re.search(r"\b(?:high-value\s+)?personal\s+item\b.{0,80}\bmissing\b|\bmissing\b.{0,80}\bpersonal\s+item\b", event):
             select("theft_or_loss_guest_property", event, {
                 "safety_impact": 1, "business_continuity": 1 if immediate else 2,

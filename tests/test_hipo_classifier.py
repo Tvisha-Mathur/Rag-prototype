@@ -176,6 +176,114 @@ def test_corrective_retrieval_runs_once_when_cloud_grader_requests_it():
     assert analyzer.grade_calls == 2
 
 
+def test_deterministic_crag_grades_evidence_when_cloud_is_unavailable():
+    result = HipoClassifier(Retriever(), Analyzer()).classify("A load fell near a worker")
+
+    grade = result["retrieval"]["evidence_grade"]
+    assert grade["provider"] == "deterministic_crag"
+    assert grade["sufficient"] is True
+    assert grade["confidence"] >= 0.75
+
+
+def test_retrieval_critic_filters_unapproved_scoring_evidence():
+    evidence = [
+        {"chunk_id": "rubric", "channel": "complete_rubric"},
+        {"chunk_id": "accepted", "channel": "verified_case"},
+        {"chunk_id": "rejected", "channel": "verified_case"},
+    ]
+
+    filtered = HipoClassifier._filter_grounded_evidence(
+        evidence,
+        {"relevant_chunk_ids": ["accepted"]},
+    )
+
+    assert [item["chunk_id"] for item in filtered] == ["rubric", "accepted"]
+
+
+def test_second_agent_runs_for_near_threshold_scores_when_cloud_is_available():
+    class TwoAgentAnalyzer(Analyzer):
+        cloud_available = True
+        verifier_calls = 0
+
+        def grade_retrieval_evidence(self, _incident, _features, evidence):
+            return {
+                "sufficient": True,
+                "corrective_query": None,
+                "relevant_chunk_ids": [
+                    item["chunk_id"] for item in evidence if item.get("chunk_id")
+                ],
+                "missing_evidence": [],
+                "confidence": 0.9,
+            }
+
+        def verify_hipo_scores(self, *_args):
+            self.verifier_calls += 1
+            return {
+                "accepted": True,
+                "review_required": False,
+                "corrected_scores": {},
+                "reasons": {},
+            }
+
+    analyzer = TwoAgentAnalyzer()
+    result = HipoClassifier(Retriever(), analyzer).classify("A load fell near a worker")
+
+    assert analyzer.verifier_calls == 1
+    assert result["review"]["score_verifier_invoked"] is True
+    assert "score_near_hipo_threshold" in result["review"]["score_verifier_trigger_reasons"]
+
+
+def test_second_agent_is_skipped_for_fully_supported_low_risk_scores():
+    class LowRiskAnalyzer(Analyzer):
+        cloud_available = True
+        verifier_calls = 0
+
+        def grade_retrieval_evidence(self, _incident, _features, evidence):
+            return {
+                "sufficient": True,
+                "corrective_query": None,
+                "relevant_chunk_ids": [
+                    item["chunk_id"] for item in evidence if item.get("chunk_id")
+                ],
+                "missing_evidence": [],
+                "confidence": 0.95,
+            }
+
+        def classify_hipo(self, *_args):
+            return {
+                "safety_impact": {"score": 2, "level": "Minor", "reason": "Minor exposure."},
+                "damage_to_assets": {"score": 2, "level": "Minor", "reason": "Minor repair."},
+                "business_continuity": {"score": 2, "level": "Minor", "reason": "Minor delay."},
+                "reputational_impact": {"score": 2, "level": "Minor", "reason": "Minor concern."},
+                "vip_safety_impact": {"score": 1, "level": "Negligible", "reason": "No VIP."},
+                "likelihood_of_more_severe_outcome": {"score": 2, "level": "Minor", "reason": "Additional failures required."},
+                "_provider": "gemini",
+            }
+
+        def extract_hipo_scoring_facts(self, _text):
+            return {
+                "safety_potential": "minor",
+                "operational_potential": "minor_delay",
+                "asset_potential": "minor_repair",
+                "reputation_potential": "minor_addressable",
+                "vip_involved": False,
+                "escalation_proximity": "multiple_additional_failures",
+                "supporting_phrases": {},
+                "_provider": "gemini",
+            }
+
+        def verify_hipo_scores(self, *_args):
+            self.verifier_calls += 1
+            raise AssertionError("Low-risk supported scores should not invoke Agent 2")
+
+    analyzer = LowRiskAnalyzer()
+    result = HipoClassifier(Retriever(), analyzer).classify("A minor contained incident")
+
+    assert analyzer.verifier_calls == 0
+    assert result["review"]["score_verifier_invoked"] is False
+    assert result["review"]["score_verifier_trigger_reasons"] == []
+
+
 def test_dimension_retrieval_and_missing_facts_are_exposed_for_review():
     result = HipoClassifier(Retriever(), Analyzer()).classify("A load fell near a worker")
 

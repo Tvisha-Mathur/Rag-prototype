@@ -182,6 +182,10 @@ def health() -> dict[str, Any]:
             else settings.ollama_model
         ),
         "local_fallback_model": settings.ollama_model,
+        "rag_ready": retriever is not None,
+        "cloud_retrieval_critic_ready": bool(getattr(agent, "cloud_available", False)),
+        "deterministic_crag_fallback_enabled": settings.deterministic_crag_fallback_enabled,
+        "score_verifier_enabled": settings.score_verifier_enabled,
     }
 
 

@@ -164,6 +164,122 @@ class HipoClassifier:
             })
         return grouped
 
+    @classmethod
+    def _deterministic_evidence_grade(
+        cls,
+        incident_text: str,
+        features: dict[str, Any],
+        evidence: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Grade CRAG evidence locally when the cloud critic is unavailable."""
+
+        anchors = " ".join(str(value) for value in (
+            incident_text,
+            features.get("primary_event"),
+            features.get("hazard"),
+            features.get("exposure"),
+            features.get("energy_source"),
+        ) if value)
+        anchor_tokens = set(cls._tokens(anchors))
+        dimensions: set[str] = set()
+        relevant_chunk_ids: list[str] = []
+        event_evidence_found = False
+
+        for item in evidence:
+            dimension = item.get("dimension")
+            rubric_levels = item.get("rubric_levels") or []
+            if dimension and len(rubric_levels) == 5:
+                dimensions.add(str(dimension))
+
+            evidence_text = " ".join(str(item.get(field) or "") for field in (
+                "incident_summary", "hazard_identified", "text", "search_text",
+                "domain", "subdomain",
+            ))
+            overlaps = bool(anchor_tokens.intersection(cls._tokens(evidence_text)))
+            authoritative = item.get("channel") in {"complete_rubric", "rule"}
+            if overlaps or authoritative:
+                chunk_id = item.get("chunk_id")
+                if chunk_id:
+                    relevant_chunk_ids.append(str(chunk_id))
+            if overlaps and item.get("channel") in {
+                "verified_case", "hazard", "dimension_rule"
+            }:
+                event_evidence_found = True
+
+        required_dimensions = set(cls.DIMENSION_PARAMETERS)
+        missing_dimensions = sorted(required_dimensions - dimensions)
+        missing_evidence = [
+            *(f"complete rubric for {field}" for field in missing_dimensions),
+            *([] if event_evidence_found else ["event-specific hazard or exposure evidence"]),
+        ]
+        sufficient = not missing_evidence
+        corrective_parts = [
+            str(features.get("primary_event") or "").strip(),
+            str(features.get("hazard") or "").strip(),
+            str(features.get("exposure") or "").strip(),
+            "HIPO scoring rules",
+            *missing_evidence,
+        ]
+        return {
+            "sufficient": sufficient,
+            "relevant_chunk_ids": list(dict.fromkeys(relevant_chunk_ids))[:12],
+            "missing_evidence": missing_evidence[:6],
+            "corrective_query": (
+                " | ".join(part for part in corrective_parts if part)[:700]
+                if not sufficient else None
+            ),
+            "confidence": 0.8 if sufficient else 0.45,
+            "provider": "deterministic_crag",
+        }
+
+    @staticmethod
+    def _filter_grounded_evidence(
+        evidence: list[dict[str, Any]], grade: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        """Keep complete policy rubrics plus evidence accepted by Agent 1."""
+
+        if not grade:
+            return evidence
+        relevant = {str(item) for item in grade.get("relevant_chunk_ids", [])}
+        filtered = [
+            item for item in evidence
+            if item.get("channel") == "complete_rubric"
+            or str(item.get("chunk_id")) in relevant
+        ]
+        return filtered or [
+            item for item in evidence if item.get("channel") == "complete_rubric"
+        ]
+
+    @staticmethod
+    def _score_verifier_reasons(
+        assessment: dict[str, Any],
+        assessment_provider: str,
+        evidence_grade: dict[str, Any] | None,
+        missing_information: list[str],
+        incident_text: str,
+    ) -> list[str]:
+        """Return bounded reasons that justify invoking the second agent."""
+
+        reasons: list[str] = []
+        if not evidence_grade or not evidence_grade.get("sufficient"):
+            reasons.append("retrieval_evidence_incomplete")
+        if float((evidence_grade or {}).get("confidence", 0)) < settings.score_verifier_confidence_threshold:
+            reasons.append("retrieval_confidence_below_threshold")
+        if assessment_provider in {"deterministic_fallback", "deterministic_emergency"}:
+            reasons.append("emergency_scoring_fallback")
+        if any((rating or {}).get("score") in {3, 4} for rating in assessment.values()):
+            reasons.append("score_near_hipo_threshold")
+        if missing_information:
+            reasons.append("unresolved_scoring_facts")
+        if re.search(r"\b(?:directly\s+exposed|narrowly\s+(?:avoided|missed)|small\s+change)\b", incident_text, re.I):
+            proposed_safety = (assessment.get("safety_impact") or {}).get("score", 1)
+            proposed_likelihood = (
+                assessment.get("likelihood_of_more_severe_outcome") or {}
+            ).get("score", 1)
+            if proposed_safety < 4 or proposed_likelihood < 4:
+                reasons.append("proposal_conflicts_with_exposure_proximity")
+        return list(dict.fromkeys(reasons))
+
     IMPACT_LEVELS = {1: "Negligible", 2: "Minor", 3: "Moderate", 4: "Major", 5: "Catastrophic"}
     # All six HIPO dimensions use one user-facing score vocabulary. Likelihood
     # still measures escalation proximity; only its displayed level is unified.
@@ -886,43 +1002,79 @@ class HipoClassifier:
             for item in combined_rules.values()
         ]
         fused = self._fuse([similar_cases, hazard_matches, rules])
-        evidence_grade = None
-        corrective_retrieval_used = False
-        grader = getattr(self.llm_analyzer, "grade_retrieval_evidence", None)
-        if bool(getattr(self.llm_analyzer, "cloud_available", False)) and callable(grader):
-            try:
-                evidence_grade = grader(incident_text, features, fused[:12])
-                corrective_query = str(evidence_grade.get("corrective_query") or "").strip()
-                if not evidence_grade.get("sufficient") and corrective_query:
-                    corrective_rules = self.retriever.retrieve(
-                        corrective_query,
-                        chunk_type="hipo_policy",
-                        limit=10,
-                        num_candidates=120,
-                    )
-                    for item in corrective_rules:
-                        chunk_id = item.get("chunk_id")
-                        if chunk_id:
-                            combined_rules[str(chunk_id)] = item
-                    rules = [
-                        {**item, "channel": "rule"}
-                        for item in combined_rules.values()
-                    ]
-                    fused = self._fuse([similar_cases, hazard_matches, rules])
-                    corrective_retrieval_used = True
-                    evidence_grade = grader(incident_text, features, fused[:12])
-            except Exception as exc:
-                print(f"Cloud evidence grading unavailable; continuing safely: {exc}")
-        scoring_evidence: list[dict[str, Any]] = [
+        raw_scoring_evidence: list[dict[str, Any]] = [
             *similar_cases, *self._group_rubrics(complete_rubrics)
         ]
-        seen_evidence = {str(item.get("chunk_id")) for item in scoring_evidence if item.get("chunk_id")}
+        seen_evidence = {
+            str(item.get("chunk_id"))
+            for item in raw_scoring_evidence if item.get("chunk_id")
+        }
         for items in dimension_evidence.values():
             for item in items:
                 key = str(item.get("chunk_id"))
                 if key and key not in seen_evidence:
-                    scoring_evidence.append(item)
+                    raw_scoring_evidence.append(item)
                     seen_evidence.add(key)
+
+        evidence_grade = None
+        corrective_retrieval_used = False
+        grader = getattr(self.llm_analyzer, "grade_retrieval_evidence", None)
+        cloud_critic_available = bool(
+            getattr(self.llm_analyzer, "cloud_available", False)
+        ) and callable(grader)
+        critic_evidence = [*raw_scoring_evidence, *hazard_matches]
+        if cloud_critic_available:
+            try:
+                evidence_grade = grader(incident_text, features, critic_evidence[:48])
+                evidence_grade["provider"] = "gemini_retrieval_critic"
+            except Exception as exc:
+                print(f"Cloud evidence grading unavailable; using deterministic CRAG: {exc}")
+        if evidence_grade is None and settings.deterministic_crag_fallback_enabled:
+            evidence_grade = self._deterministic_evidence_grade(
+                incident_text, features, critic_evidence
+            )
+
+        corrective_query = str((evidence_grade or {}).get("corrective_query") or "").strip()
+        if evidence_grade and not evidence_grade.get("sufficient") and corrective_query:
+            corrective_rules = self.retriever.retrieve(
+                corrective_query,
+                chunk_type="hipo_policy",
+                limit=10,
+                num_candidates=120,
+            )
+            for item in corrective_rules:
+                chunk_id = item.get("chunk_id")
+                if chunk_id:
+                    combined_rules[str(chunk_id)] = item
+                    if str(chunk_id) not in seen_evidence:
+                        raw_scoring_evidence.append({**item, "channel": "rule"})
+                        seen_evidence.add(str(chunk_id))
+            rules = [
+                {**item, "channel": "rule"}
+                for item in combined_rules.values()
+            ]
+            fused = self._fuse([similar_cases, hazard_matches, rules])
+            corrective_retrieval_used = True
+            corrected_critic_evidence = [*raw_scoring_evidence, *hazard_matches]
+            if bool(getattr(self.llm_analyzer, "cloud_available", False)) and callable(grader):
+                try:
+                    evidence_grade = grader(
+                        incident_text, features, corrected_critic_evidence[:48]
+                    )
+                    evidence_grade["provider"] = "gemini_retrieval_critic"
+                except Exception as exc:
+                    print(f"Corrected cloud evidence grading unavailable; using deterministic CRAG: {exc}")
+                    evidence_grade = self._deterministic_evidence_grade(
+                        incident_text, features, corrected_critic_evidence
+                    )
+            elif settings.deterministic_crag_fallback_enabled:
+                evidence_grade = self._deterministic_evidence_grade(
+                    incident_text, features, corrected_critic_evidence
+                )
+
+        scoring_evidence = self._filter_grounded_evidence(
+            raw_scoring_evidence, evidence_grade
+        )
         scoring_started = time.perf_counter()
         try:
             assessment = self.llm_analyzer.classify_hipo(incident_text, features, scoring_evidence[:48])
@@ -945,12 +1097,28 @@ class HipoClassifier:
 
         verification = None
         verifier = getattr(self.llm_analyzer, "verify_hipo_scores", None)
-        if bool(getattr(self.llm_analyzer, "cloud_available", False)) and callable(verifier):
+        verifier_reasons = self._score_verifier_reasons(
+            assessment,
+            assessment_provider,
+            evidence_grade,
+            missing_information,
+            incident_text,
+        )
+        verifier_invoked = False
+        verifier_failed = False
+        if (
+            settings.score_verifier_enabled
+            and verifier_reasons
+            and bool(getattr(self.llm_analyzer, "cloud_available", False))
+            and callable(verifier)
+        ):
             try:
+                verifier_invoked = True
                 verification = verifier(incident_text, scoring_facts, assessment, scoring_evidence[:48])
                 assessment, verified_corrections = self._apply_bounded_verification(assessment, verification)
             except Exception as exc:
                 print(f"HIPO score verification unavailable; keeping resolved scores: {exc}")
+                verifier_failed = True
                 verified_corrections = []
         else:
             verified_corrections = []
@@ -999,6 +1167,23 @@ class HipoClassifier:
         }
 
         total_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        verifier_unavailable = bool(
+            verifier_failed
+            or (
+                settings.score_verifier_enabled
+                and not verifier_invoked
+                and set(verifier_reasons).intersection({
+                    "retrieval_evidence_incomplete",
+                    "retrieval_confidence_below_threshold",
+                    "emergency_scoring_fallback",
+                    "unresolved_scoring_facts",
+                    "proposal_conflicts_with_exposure_proximity",
+                })
+            )
+        )
+        evidence_requires_review = bool(
+            evidence_grade and not evidence_grade.get("sufficient")
+        )
         return {
             "overall_hipo_classification": {
                 "classification": final,
@@ -1014,7 +1199,12 @@ class HipoClassifier:
             "scoring_facts": scoring_facts,
             "score_resolution": score_resolution,
             "review": {
-                "required": bool(missing_information) or bool((verification or {}).get("review_required")),
+                "required": (
+                    bool(missing_information)
+                    or evidence_requires_review
+                    or verifier_unavailable
+                    or bool((verification or {}).get("review_required"))
+                ),
                 "missing_information": missing_information,
                 "assessment_mode": assessment_mode,
                 "assessment_provider": assessment_provider,
@@ -1024,6 +1214,9 @@ class HipoClassifier:
                 "event_evidence": event_evidence,
                 "event_corrections": event_corrections,
                 "verification": verification,
+                "score_verifier_invoked": verifier_invoked,
+                "score_verifier_failed": verifier_failed,
+                "score_verifier_trigger_reasons": verifier_reasons,
                 "verified_corrections": verified_corrections,
                 "stage_timings_ms": {
                     "feature_extraction": feature_ms,

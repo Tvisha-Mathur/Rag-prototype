@@ -241,7 +241,7 @@ def request_prediction(api_url: str, incident_text: str, max_attempts: int,
                 f"{api_url.rstrip('/')}/incident/workflow/start",
                 json={"incident_text": incident_text}, timeout=timeout_seconds,
             )
-            if response.status_code >= 500:
+            if response.status_code == 429 or response.status_code >= 500:
                 raise httpx.HTTPStatusError(
                     f"HTTP {response.status_code}: {response.text[:1000]}",
                     request=response.request, response=response,
@@ -253,11 +253,20 @@ def request_prediction(api_url: str, incident_text: str, max_attempts: int,
             last_error = str(exc)
             retryable = isinstance(exc, httpx.TransportError) or (
                 isinstance(exc, httpx.HTTPStatusError)
-                and exc.response.status_code in {500, 502, 503, 504}
+                and exc.response.status_code in {429, 500, 502, 503, 504}
             )
             if not retryable or attempt == max_attempts:
                 break
-            time.sleep(min(2 ** (attempt - 1), 8))
+            retry_after = exc.response.headers.get("Retry-After") if isinstance(
+                exc, httpx.HTTPStatusError
+            ) else None
+            try:
+                wait_seconds = float(retry_after) if retry_after else min(
+                    5 * (2 ** (attempt - 1)), 60
+                )
+            except ValueError:
+                wait_seconds = min(5 * (2 ** (attempt - 1)), 60)
+            time.sleep(max(wait_seconds, 1))
     return {field: None for field in FIELDS}, {}, last_error, max_attempts
 
 
@@ -277,6 +286,10 @@ def main() -> None:
     )
     parser.add_argument("--max-attempts", type=int, default=2)
     parser.add_argument("--timeout-seconds", type=float, default=240)
+    parser.add_argument(
+        "--delay-seconds", type=float, default=0,
+        help="Pause between cases to avoid hosted API rate limits.",
+    )
     args = parser.parse_args()
 
     records = load_pdf_records(args.source)
@@ -316,6 +329,8 @@ def main() -> None:
         save_checkpoint(checkpoint, results)
         write_report(results, args.output)
         print(f"Completed {len(results)}/{total}")
+        if args.delay_seconds > 0 and len(results) < total:
+            time.sleep(args.delay_seconds)
 
     write_report(results, args.output)
     print(f"Saved accuracy report: {args.output.resolve()}")

@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     ollama_fallback_enabled: bool = True
     agentic_retrieval_enabled: bool = True
     agentic_retrieval_max_queries: int = 3
+    deterministic_crag_fallback_enabled: bool = True
+    score_verifier_enabled: bool = True
+    score_verifier_confidence_threshold: float = 0.75
     embedding_provider: str = "local"
     embedding_local_files_only: bool = True
     huggingface_api_token: str | None = None

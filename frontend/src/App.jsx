@@ -138,7 +138,13 @@ function App() {
     setError('');
   };
 
-  const fields = Object.entries(pendingResult || {});
+  const editableFields = Object.entries(pendingResult || {}).filter(
+    ([key]) => key !== 'diagnostics',
+  );
+  const fields = Object.entries(pendingResult || {}).flatMap(([key, value]) => {
+    if (key !== 'diagnostics') return [[key, value]];
+    return [['hipo_review', value?.hipo_review_required ? 'Yes' : 'No']];
+  });
 
   return (
     <div className="app-shell">
@@ -189,7 +195,7 @@ function App() {
                 </button>
               </div> : <div className="correction-panel">
                 <h3>Edit the current response</h3>
-                {fields.map(([key, value]) => <label key={key} className="field-editor">
+                {editableFields.map(([key, value]) => <label key={key} className="field-editor">
                   <span>{key.replace(/_/g, ' ')}</span>
                   <textarea value={correctionDraft[key] ?? renderValue(value)}
                     onChange={(event) => setCorrectionDraft((current) => ({ ...current, [key]: event.target.value }))} />

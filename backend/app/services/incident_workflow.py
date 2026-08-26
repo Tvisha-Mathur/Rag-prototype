@@ -581,7 +581,7 @@ class IncidentWorkflow:
                 "Major (4 points)": "Could have resulted in a fatality or major injury.",
                 "Moderate (3 points)": "Could have caused serious injuries that require medical attention.",
                 "Minor (2 points)": "Could have caused minor injuries or health concerns.",
-                "Negligible (1 point)": "Unlikely to cause any significant injury.",
+                "Negligible (1 point)": "No significant injury potential was established.",
             },
             "damage_to_assets": {
                 "Catastrophic (5 points)": "Could have caused damage exceeding 1% of the annual revenue.",
@@ -612,11 +612,11 @@ class IncidentWorkflow:
                 "Negligible (1 point)": "No significant impact on VIP safety.",
             },
             "likelihood_of_more_severe_outcomes": {
-                "Majorly Likely (5 points)": "The severe outcome was narrowly avoided and could have easily occurred under slightly different conditions.",
-                "Likely (4 points)": "The severe outcome was possible and would have occurred with a minor change in circumstances.",
-                "Possible (3 points)": "The severe outcome was possible but less likely to occur.",
-                "Unlikely (2 points)": "The severe outcome was improbable but not impossible.",
-                "Rare (1 point)": "The severe outcome was Majorly unlikely to occur.",
+                "Catastrophic (5 points)": "The severe outcome was narrowly avoided and could have easily occurred under slightly different conditions.",
+                "Major (4 points)": "The severe outcome would have occurred with a minor change in circumstances.",
+                "Moderate (3 points)": "The severe outcome was possible but less proximate.",
+                "Minor (2 points)": "Several additional control failures would have been required.",
+                "Negligible (1 point)": "The available evidence showed remote proximity to a more severe outcome.",
             },
         }
 
@@ -627,11 +627,6 @@ class IncidentWorkflow:
                 "Moderate (3 points)": 3,
                 "Minor (2 points)": 2,
                 "Negligible (1 point)": 1,
-                "Majorly Likely (5 points)": 5,
-                "Likely (4 points)": 4,
-                "Possible (3 points)": 3,
-                "Unlikely (2 points)": 2,
-                "Rare (1 point)": 1,
             }
             impact_ratings = [
                 rating

@@ -165,7 +165,9 @@ class HipoClassifier:
         return grouped
 
     IMPACT_LEVELS = {1: "Negligible", 2: "Minor", 3: "Moderate", 4: "Major", 5: "Catastrophic"}
-    LIKELIHOOD_LEVELS = {1: "Rare", 2: "Unlikely", 3: "Possible", 4: "Likely", 5: "Majorly Likely"}
+    # All six HIPO dimensions use one user-facing score vocabulary. Likelihood
+    # still measures escalation proximity; only its displayed level is unified.
+    LIKELIHOOD_LEVELS = IMPACT_LEVELS.copy()
     DIMENSION_QUERIES = {
         "safety_impact": "injury medical attention major injury fatality safety potential",
         "damage_to_assets": "asset damage repair replacement financial loss annual revenue",
@@ -289,7 +291,7 @@ class HipoClassifier:
             "vip_safety_impact": {"score": 1, "level": "Negligible", "reason": "No VIP involvement was established."},
             "likelihood_of_more_severe_outcome": {
                 "score": 1,
-                "level": "Rare",
+                "level": "Negligible",
                 "reason": "Available evidence did not establish proximity to a more severe outcome.",
             },
         }

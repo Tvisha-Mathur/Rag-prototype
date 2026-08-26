@@ -30,13 +30,7 @@ ImpactOption = Literal[
     "Minor (2 points)",
     "Negligible (1 point)",
 ]
-LikelihoodOption = Literal[
-    "Majorly Likely (5 points)",
-    "Likely (4 points)",
-    "Possible (3 points)",
-    "Unlikely (2 points)",
-    "Rare (1 point)",
-]
+LikelihoodOption = ImpactOption
 
 
 class HipoCriteriaAssessment(BaseModel):
@@ -78,7 +72,7 @@ class HipoDecision(HipoCriteriaAssessment):
 
 
 ImpactLevel = Literal["Negligible", "Minor", "Moderate", "Major", "Catastrophic"]
-LikelihoodLevel = Literal["Rare", "Unlikely", "Possible", "Likely", "Majorly Likely"]
+LikelihoodLevel = ImpactLevel
 
 
 class ImpactRating(BaseModel):

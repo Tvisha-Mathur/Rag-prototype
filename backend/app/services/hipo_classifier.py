@@ -265,7 +265,11 @@ class HipoClassifier:
             reasons.append("retrieval_evidence_incomplete")
         if float((evidence_grade or {}).get("confidence", 0)) < settings.score_verifier_confidence_threshold:
             reasons.append("retrieval_confidence_below_threshold")
-        if assessment_provider in {"deterministic_fallback", "deterministic_emergency"}:
+        if assessment_provider in {
+            "deterministic_fallback",
+            "deterministic_emergency",
+            "deterministic_evidence_fallback",
+        }:
             reasons.append("emergency_scoring_fallback")
         if any((rating or {}).get("score") in {3, 4} for rating in assessment.values()):
             reasons.append("score_near_hipo_threshold")
@@ -414,23 +418,114 @@ class HipoClassifier:
 
     @staticmethod
     def fallback_scoring_facts(incident_text: str) -> dict[str, Any]:
-        """Conservative fallback: only explicit negations and VIP mentions are extracted."""
-        lowered = incident_text.lower()
+        """Extract explicit rubric anchors without inventing unsupported potential."""
+        lowered = " ".join(incident_text.lower().split())
         vip_negated = bool(re.search(
             r"\b(?:no|not|without)\s+(?:a\s+|any\s+)?vip(?:s)?\b|\bvip(?:s)?\s+(?:was|were|is|are)\s+not\s+involved\b",
             lowered,
         ))
         vip_mentioned = bool(re.search(r"\bvip(?:s)?\b", lowered))
+        phrases: dict[str, list[str]] = {}
+
+        def classify(field: str, patterns: list[tuple[str, str]]) -> str:
+            for value, pattern in patterns:
+                match = re.search(pattern, lowered)
+                if match:
+                    phrases[field] = [match.group(0)[:180]]
+                    return value
+            return "unknown"
+
+        safety = classify("safety_potential", [
+            ("multiple_fatalities", r"\bmultiple\s+(?:fatalities|deaths)\b"),
+            ("fatality", r"\b(?:fatality|fatalities|death|died|permanent\s+disability)\b"),
+            ("major_injury", r"\b(?:major|serious|life[-\s]threatening)\s+(?:injury|harm)|hospitali[sz](?:ed|ation)\b"),
+            ("medical_attention", r"\b(?:medical\s+(?:attention|treatment)|first\s+aid|injur(?:y|ed)|symptoms?)\b"),
+            ("minor", r"\b(?:minor\s+(?:injury|harm)|bruise|small\s+cut|strain|sprain)\b"),
+            ("none", r"\b(?:no\s+(?:injury|harm)|uninjured)\b"),
+        ])
+        operations = classify("operational_potential", [
+            ("complete_shutdown", r"\b(?:complete|full|sitewide|property-wide)\s+(?:shutdown|closure|evacuation)\b"),
+            ("partial_shutdown", r"\b(?:partial|area|department|floor)\s+(?:shutdown|closure|evacuation)|\boperations?\s+(?:were\s+)?suspended\b"),
+            ("continued_with_adjustments", r"\b(?:continued|resumed)\s+with\s+(?:adjustments?|a\s+workaround)|\btemporary\s+workaround\b"),
+            ("minor_delay", r"\b(?:minor|brief|short)\s+(?:delay|disruption|interruption)|\btemporarily\s+(?:delayed|interrupted)\b"),
+            ("none", r"\boperations?\s+continued\s+(?:normally|without\s+(?:delay|disruption))|\bno\s+operational\s+(?:impact|disruption)\b"),
+        ])
+        assets = classify("asset_potential", [
+            ("over_one_percent_revenue", r"\b(?:over|more\s+than|greater\s+than)\s+1\s*%\s+(?:of\s+)?(?:annual\s+)?revenue\b"),
+            ("significant_under_one_percent_revenue", r"\b(?:significant|major|extensive)\s+(?:asset|property|equipment)\s+(?:damage|loss)\b"),
+            ("repair_or_replacement", r"\b(?:repair\s+or\s+replacement|replacement\s+(?:was\s+)?required|high-value\s+(?:item|property).{0,50}(?:missing|stolen|damaged))\b"),
+            ("minor_repair", r"\b(?:minor\s+(?:asset|property|equipment)\s+damage|minor\s+repair|small\s+(?:repair|loss))\b"),
+            ("none", r"\b(?:no\s+(?:asset|property|equipment)\s+(?:damage|loss)|no\s+damage)\b"),
+        ])
+        reputation = classify("reputation_potential", [
+            ("wide_media_coverage", r"\b(?:national|international|widespread)\s+(?:media|news)\s+(?:coverage|attention)\b"),
+            ("significant_publicity", r"\b(?:significant|major)\s+(?:publicity|public\s+attention)|\bmedia\s+coverage\b"),
+            ("negative_attention", r"\b(?:negative\s+(?:attention|publicity)|social\s+media|public\s+escalation|regulatory\s+attention)\b"),
+            ("minor_addressable", r"\b(?:guest\s+complaint|minor\s+reputational|locally\s+addressable)\b"),
+            ("none", r"\bno\s+(?:publicity|media\s+attention|reputational\s+impact)\b"),
+        ])
+        proximity = classify("escalation_proximity", [
+            ("narrowly_avoided", r"\b(?:narrowly\s+(?:avoided|missed)|near[-\s]miss)\b"),
+            ("small_change", r"\b(?:small\s+change|directly\s+exposed|moments?\s+before\s+(?:control|the\s+activity)|seconds?\s+before\s+(?:control|the\s+activity))\b"),
+            ("possible", r"\b(?:credible\s+(?:potential|escalation)|could\s+have\s+(?:caused|resulted)|possible\s+more\s+severe)\b"),
+            ("multiple_additional_failures", r"\b(?:multiple|several)\s+(?:additional\s+)?(?:controls?|failures?|changes?)\b"),
+            ("remote", r"\b(?:remote\s+(?:likelihood|possibility)|no\s+credible\s+escalation)\b"),
+        ])
         return {
-            "safety_potential": "unknown",
-            "operational_potential": "unknown",
-            "asset_potential": "unknown",
-            "reputation_potential": "unknown",
+            "safety_potential": safety,
+            "operational_potential": operations,
+            "asset_potential": assets,
+            "reputation_potential": reputation,
             "vip_involved": False if vip_negated else (True if vip_mentioned else False),
-            "escalation_proximity": "unknown",
-            "supporting_phrases": {},
+            "escalation_proximity": proximity,
+            "supporting_phrases": phrases,
             "extraction_mode": "deterministic_fallback",
         }
+
+    @classmethod
+    def _evidence_fallback_assessment(
+        cls,
+        facts: dict[str, Any],
+        similar_cases: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Score dimensions from explicit facts, then nearby verified examples."""
+        assessment = cls.fallback_assessment()
+        for field, fact_field in cls.FACT_FIELDS.items():
+            fact_value = facts.get(fact_field, "unknown")
+            score = cls.FACT_TO_SCORE[fact_field].get(fact_value)
+            source = f"explicit {fact_field}: {fact_value}"
+            # A stated no-harm outcome is not an upper bound on credible
+            # potential. Let nearby verified examples supply the proposal;
+            # later deterministic caps still prevent unsupported escalation.
+            if score is None or score <= 1:
+                votes = sorted(
+                    int(item[field])
+                    for item in similar_cases[:3]
+                    if item.get("verified") is True
+                    and isinstance(item.get(field), int)
+                    and 1 <= int(item[field]) <= 5
+                )
+                if votes:
+                    score = min(5, max(1, int(sum(votes) / len(votes) + 0.5)))
+                    source = f"rounded mean of {len(votes)} retrieved verified examples"
+            if score is not None:
+                levels = (
+                    cls.LIKELIHOOD_LEVELS
+                    if field == "likelihood_of_more_severe_outcome"
+                    else cls.IMPACT_LEVELS
+                )
+                assessment[field] = {
+                    "score": score,
+                    "level": levels[score],
+                    "reason": f"Evidence fallback used {source}.",
+                }
+        if facts.get("vip_involved") is False:
+            assessment["vip_safety_impact"] = {
+                "score": 1,
+                "level": cls.IMPACT_LEVELS[1],
+                "reason": "No VIP involvement was established.",
+            }
+        return assessment
 
     def _dimension_evidence(
         self, incident_text: str, features: dict[str, Any]
@@ -456,6 +551,228 @@ class HipoClassifier:
         with ThreadPoolExecutor(max_workers=6) as pool:
             futures = [pool.submit(retrieve, field, terms) for field, terms in self.DIMENSION_QUERIES.items()]
             return dict(future.result() for future in futures)
+
+    def _dimension_verified_examples(
+        self,
+        incident_text: str,
+        features: dict[str, Any],
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Retrieve a separate verified-example set for every score dimension."""
+        mechanism = " | ".join(str(value) for value in (
+            features.get("primary_event"), features.get("hazard"),
+            features.get("exposure"), features.get("energy_source"),
+        ) if value) or incident_text
+
+        def retrieve(field: str, terms: str) -> tuple[str, list[dict[str, Any]]]:
+            query = f"{mechanism} | {terms}"
+            try:
+                items = self.retriever.retrieve(
+                    query,
+                    chunk_type="historical_incident",
+                    limit=6,
+                    num_candidates=180,
+                )
+            except Exception as exc:
+                print(f"Verified-example retrieval unavailable for {field}: {exc}")
+                return field, []
+            verified: list[dict[str, Any]] = []
+            for item in items:
+                value = (
+                    item.get("vip_safety")
+                    if field == "vip_safety_impact"
+                    else item.get(field)
+                )
+                if item.get("verified") is True and isinstance(value, int) and 1 <= value <= 5:
+                    verified.append({
+                        **item, field: value, "dimension": field,
+                        "channel": "dimension_verified_example",
+                    })
+            return field, verified[:5]
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [
+                pool.submit(retrieve, field, terms)
+                for field, terms in self.DIMENSION_QUERIES.items()
+            ]
+            return dict(future.result() for future in futures)
+
+    @classmethod
+    def _weighted_example_vote(
+        cls,
+        field: str,
+        examples: list[dict[str, Any]],
+        incident_text: str,
+        features: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return a confidence-gated score using similarity and mechanism overlap."""
+        anchors = " ".join(str(value) for value in (
+            incident_text, features.get("primary_event"), features.get("hazard"),
+            features.get("exposure"), features.get("energy_source"),
+            features.get("credible_worst_case"),
+        ) if value)
+        anchor_tokens = set(cls._tokens(anchors))
+        totals: dict[int, float] = defaultdict(float)
+        weighted_rows: list[dict[str, Any]] = []
+        for rank, item in enumerate(examples[:5], 1):
+            raw_score = item.get(field)
+            if not isinstance(raw_score, int) or raw_score not in range(1, 6):
+                continue
+            vector_similarity = min(1.0, max(0.0, float(item.get("score") or 0.0)))
+            evidence_text = " ".join(str(item.get(key) or "") for key in (
+                "incident_summary", "hazard", "exposure", "energy_source",
+                "credible_worst_case", "domain", "subdomain",
+            ))
+            evidence_tokens = set(cls._tokens(evidence_text))
+            overlap = (
+                len(anchor_tokens & evidence_tokens) / max(1, len(anchor_tokens | evidence_tokens))
+            )
+            mechanism_match = 1.0 if any(
+                str(features.get(key) or "").casefold()
+                and str(features.get(key) or "").casefold() in evidence_text.casefold()
+                for key in ("hazard", "exposure", "energy_source")
+            ) else 0.0
+            rank_prior = 1.0 / rank
+            weight = (
+                0.45 * vector_similarity
+                + 0.30 * mechanism_match
+                + 0.15 * overlap
+                + 0.10 * rank_prior
+            )
+            totals[raw_score] += weight
+            weighted_rows.append({
+                "chunk_id": item.get("chunk_id"), "score": raw_score,
+                "weight": round(weight, 4),
+            })
+        total_weight = sum(totals.values())
+        if not totals or total_weight <= 0:
+            return {"score": None, "confidence": 0.0, "examples": weighted_rows}
+        selected = max(totals, key=totals.get)
+        confidence = totals[selected] / total_weight
+        return {
+            "score": selected,
+            "confidence": round(confidence, 4),
+            "examples": weighted_rows,
+            "distribution": {str(score): round(weight / total_weight, 4) for score, weight in totals.items()},
+        }
+
+    def _apply_independent_parameter_scoring(
+        self,
+        incident_text: str,
+        features: dict[str, Any],
+        facts: dict[str, Any],
+        assessment: dict[str, Any],
+        assessment_provider: str,
+        complete_rubrics: dict[str, list[dict[str, Any]]],
+        dimension_examples: dict[str, list[dict[str, Any]]],
+    ) -> tuple[dict[str, Any], dict[str, dict[str, Any]], list[str]]:
+        """Apply confidence-gated independent scorers without forcing guesses."""
+        resolved = {field: dict(value) for field, value in assessment.items()}
+        decisions: dict[str, dict[str, Any]] = {}
+        abstained: list[str] = []
+        scorer = getattr(self.llm_analyzer, "score_hipo_parameter", None)
+        cloud_enabled = bool(
+            settings.parameter_scorer_enabled
+            and getattr(self.llm_analyzer, "cloud_available", False)
+            and callable(scorer)
+        )
+
+        cloud_results: dict[str, dict[str, Any]] = {}
+        if cloud_enabled:
+            def score(field: str) -> tuple[str, dict[str, Any]]:
+                rubric = self._group_rubrics({field: complete_rubrics.get(field, [])})[0]
+                result = scorer(
+                    incident_text,
+                    field,
+                    int((resolved.get(field) or {}).get("score", 1)),
+                    rubric,
+                    dimension_examples.get(field, []),
+                )
+                return field, result
+
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                futures = {
+                    field: pool.submit(score, field)
+                    for field in self.DIMENSION_PARAMETERS
+                    if not (field == "vip_safety_impact" and facts.get("vip_involved") is False)
+                }
+                for field, future in futures.items():
+                    try:
+                        _, cloud_results[field] = future.result()
+                    except Exception as exc:
+                        print(f"Independent {field} scorer unavailable: {exc}")
+
+        fallback_provider = assessment_provider in {
+            "deterministic_fallback", "deterministic_emergency",
+            "deterministic_evidence_fallback",
+        }
+        for field in self.DIMENSION_PARAMETERS:
+            if field == "vip_safety_impact" and facts.get("vip_involved") is False:
+                decisions[field] = {
+                    "score": 1, "confidence": 1.0, "provider": "deterministic_vip_rule",
+                    "abstained": False,
+                }
+                continue
+
+            vote = self._weighted_example_vote(
+                field, dimension_examples.get(field, []), incident_text, features
+            )
+            cloud = cloud_results.get(field)
+            cloud_score = (cloud or {}).get("score")
+            cloud_confidence = float((cloud or {}).get("confidence") or 0.0)
+            accepted_score: int | None = None
+            provider: str | None = None
+            if (
+                isinstance(cloud_score, int)
+                and cloud_score in range(1, 6)
+                and cloud_confidence >= settings.parameter_scorer_confidence_threshold
+            ):
+                accepted_score = cloud_score
+                provider = "gemini_parameter_scorer"
+            elif (
+                fallback_provider
+                and vote.get("score") is not None
+                and float(vote.get("confidence") or 0.0)
+                >= settings.verified_example_confidence_threshold
+            ):
+                accepted_score = int(vote["score"])
+                provider = "weighted_verified_examples"
+
+            if accepted_score is not None:
+                levels = (
+                    self.LIKELIHOOD_LEVELS
+                    if field == "likelihood_of_more_severe_outcome"
+                    else self.IMPACT_LEVELS
+                )
+                resolved[field] = {
+                    "score": accepted_score,
+                    "level": levels[accepted_score],
+                    "reason": (
+                        (cloud or {}).get("why_selected")
+                        or f"Confidence-gated score from {provider}."
+                    ),
+                }
+            should_abstain = bool(
+                fallback_provider and accepted_score is None
+            ) or bool(cloud and accepted_score is None)
+            if should_abstain:
+                abstained.append(field)
+            decisions[field] = {
+                "score": accepted_score,
+                "confidence": (
+                    cloud_confidence if provider == "gemini_parameter_scorer"
+                    else float(vote.get("confidence") or 0.0)
+                ),
+                "provider": provider,
+                "abstained": should_abstain,
+                "adjacent_boundary": {
+                    "lower": (cloud or {}).get("lower_boundary"),
+                    "upper": (cloud or {}).get("upper_boundary"),
+                    "why_not_adjacent": (cloud or {}).get("why_not_adjacent"),
+                },
+                "missing_information": (cloud or {}).get("missing_information", []),
+                "example_vote": vote,
+            }
+        return resolved, decisions, abstained
 
     @classmethod
     def _resolve_scores(
@@ -676,7 +993,8 @@ class HipoClassifier:
 
     @classmethod
     def _apply_bounded_verification(
-        cls, assessment: dict[str, Any], verification: dict[str, Any] | None
+        cls, assessment: dict[str, Any], verification: dict[str, Any] | None,
+        *, allow_fresh_scores: bool = False,
     ) -> tuple[dict[str, Any], list[str]]:
         if not verification:
             return assessment, []
@@ -686,7 +1004,9 @@ class HipoClassifier:
             if field not in corrected or not isinstance(proposed, int) or proposed not in range(1, 6):
                 continue
             current = corrected[field].get("score")
-            if not isinstance(current, int) or abs(proposed - current) > 1:
+            if not isinstance(current, int):
+                continue
+            if not allow_fresh_scores and abs(proposed - current) > 1:
                 continue
             levels = cls.LIKELIHOOD_LEVELS if field == "likelihood_of_more_severe_outcome" else cls.IMPACT_LEVELS
             corrected[field] = {
@@ -971,9 +1291,13 @@ class HipoClassifier:
                 self.retriever.retrieve, retrieval_query,
                 chunk_type="hipo_policy", limit=6, num_candidates=60,
             )
+            dimension_examples_future = pool.submit(
+                self._dimension_verified_examples, incident_text, features
+            )
             historical = historical_future.result()
             hazard_matches = hazards_future.result()
             retrieved_rules = rules_future.result()
+            dimension_examples = dimension_examples_future.result()
         critical_rules = self._critical_rules()
         complete_rubrics = self._complete_rubrics()
         dimension_evidence = self._dimension_evidence(incident_text, features)
@@ -1010,6 +1334,12 @@ class HipoClassifier:
             for item in raw_scoring_evidence if item.get("chunk_id")
         }
         for items in dimension_evidence.values():
+            for item in items:
+                key = str(item.get("chunk_id"))
+                if key and key not in seen_evidence:
+                    raw_scoring_evidence.append(item)
+                    seen_evidence.add(key)
+        for items in dimension_examples.values():
             for item in items:
                 key = str(item.get("chunk_id"))
                 if key and key not in seen_evidence:
@@ -1093,10 +1423,36 @@ class HipoClassifier:
             print(f"HIPO scoring fact extraction unavailable; using conservative facts: {exc}")
             scoring_facts = self.fallback_scoring_facts(incident_text)
             facts_provider = "deterministic_fallback"
+        if assessment_provider in {"deterministic_fallback", "deterministic_emergency"}:
+            assessment = self._evidence_fallback_assessment(
+                scoring_facts, similar_cases
+            )
+            assessment_provider = "deterministic_evidence_fallback"
+            assessment_mode = "evidence_grounded_fallback"
+        assessment, parameter_decisions, abstained_parameters = (
+            self._apply_independent_parameter_scoring(
+                incident_text,
+                features,
+                scoring_facts,
+                assessment,
+                assessment_provider,
+                complete_rubrics,
+                dimension_examples,
+            )
+        )
         assessment, score_resolution, missing_information = self._resolve_scores(assessment, scoring_facts)
+        missing_information = list(dict.fromkeys([
+            *missing_information,
+            *(f"{field}:parameter_score_abstained" for field in abstained_parameters),
+        ]))
 
         verification = None
-        verifier = getattr(self.llm_analyzer, "verify_hipo_scores", None)
+        fresh_rescore = assessment_provider == "deterministic_evidence_fallback"
+        verifier = getattr(
+            self.llm_analyzer,
+            "rescore_hipo_scores" if fresh_rescore else "verify_hipo_scores",
+            None,
+        )
         verifier_reasons = self._score_verifier_reasons(
             assessment,
             assessment_provider,
@@ -1115,7 +1471,11 @@ class HipoClassifier:
             try:
                 verifier_invoked = True
                 verification = verifier(incident_text, scoring_facts, assessment, scoring_evidence[:48])
-                assessment, verified_corrections = self._apply_bounded_verification(assessment, verification)
+                assessment, verified_corrections = self._apply_bounded_verification(
+                    assessment,
+                    verification,
+                    allow_fresh_scores=fresh_rescore,
+                )
             except Exception as exc:
                 print(f"HIPO score verification unavailable; keeping resolved scores: {exc}")
                 verifier_failed = True
@@ -1217,6 +1577,8 @@ class HipoClassifier:
                 "score_verifier_invoked": verifier_invoked,
                 "score_verifier_failed": verifier_failed,
                 "score_verifier_trigger_reasons": verifier_reasons,
+                "parameter_decisions": parameter_decisions,
+                "parameter_abstentions": abstained_parameters,
                 "verified_corrections": verified_corrections,
                 "stage_timings_ms": {
                     "feature_extraction": feature_ms,
@@ -1233,6 +1595,7 @@ class HipoClassifier:
                 "applicable_rules": rules,
                 "fused_evidence": fused[:8],
                 "dimension_evidence": dimension_evidence,
+                "dimension_verified_examples": dimension_examples,
                 "complete_rubrics": complete_rubrics,
                 "evidence_grade": evidence_grade,
                 "corrective_retrieval_used": corrective_retrieval_used,

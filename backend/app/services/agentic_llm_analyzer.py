@@ -42,6 +42,17 @@ class ScoreVerification(BaseModel):
     reasons: dict[str, str] = Field(default_factory=dict)
 
 
+class ParameterScoreDecision(BaseModel):
+    score: int | None = Field(default=None, ge=1, le=5)
+    confidence: float = Field(ge=0, le=1)
+    lower_boundary: int | None = Field(default=None, ge=1, le=5)
+    upper_boundary: int | None = Field(default=None, ge=1, le=5)
+    supporting_phrases: list[str] = Field(default_factory=list, max_length=4)
+    why_selected: str = Field(min_length=1, max_length=500)
+    why_not_adjacent: str = Field(min_length=1, max_length=500)
+    missing_information: list[str] = Field(default_factory=list, max_length=4)
+
+
 class CloudCircuitOpenError(RuntimeError):
     pass
 
@@ -343,6 +354,57 @@ that are directly supported by evidence. Incident: {incident}\nFacts: {facts}\nA
             facts=json.dumps(facts, default=str),
             assessment=json.dumps(assessment, default=str),
             evidence=json.dumps(self._compact_evidence(evidence), default=str),
+        )
+        return result.model_dump()
+
+    def rescore_hipo_scores(
+        self,
+        incident_text: str,
+        facts: dict[str, Any],
+        assessment: dict[str, Any],
+        evidence: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Create fresh dimension scores when the original scorer used fallback values."""
+        result = self._predict(
+            ScoreVerification,
+            """The original structured HIPO scorer was unavailable, so its proposed values are
+fallback placeholders rather than trustworthy scores. Independently rescore all six dimensions
+from 1 to 5 using only the incident, extracted facts, complete policy rubrics, and verified
+examples. Return every supported score in corrected_scores. Do not preserve a placeholder merely
+because changing it requires more than one level. Do not invent missing consequences. VIP must be
+1 unless VIP involvement is explicit. Set review_required when a dimension cannot be grounded.
+Incident: {incident}\nFacts: {facts}\nFallback assessment: {assessment}\nEvidence: {evidence}""",
+            incident=self._safe_incident(incident_text),
+            facts=json.dumps(facts, default=str),
+            assessment=json.dumps(assessment, default=str),
+            evidence=json.dumps(self._compact_evidence(evidence), default=str),
+        )
+        return result.model_dump()
+
+    def score_hipo_parameter(
+        self,
+        incident_text: str,
+        parameter: str,
+        provisional_score: int,
+        rubric: dict[str, Any],
+        verified_examples: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Independently score one dimension with adjacent-boundary comparison."""
+        result = self._predict(
+            ParameterScoreDecision,
+            """Score exactly one HIPO parameter independently from 1 to 5. Use only the incident,
+the complete parameter rubric, and reviewer-verified examples. Compare the best score with its
+adjacent boundary or boundaries and state why the selected boundary is met and the adjacent one
+is not. Do not transfer consequences from another parameter. Return score=null and list the
+missing information when the evidence cannot distinguish a defensible boundary. The provisional
+score is context, not authority. For VIP, score above 1 only when VIP involvement is explicit.
+Parameter: {parameter}\nIncident: {incident}\nProvisional score: {provisional}\nRubric:
+{rubric}\nVerified examples: {examples}""",
+            parameter=parameter,
+            incident=self._safe_incident(incident_text),
+            provisional=provisional_score,
+            rubric=json.dumps(rubric, default=str),
+            examples=json.dumps(self._compact_evidence(verified_examples[:5]), default=str),
         )
         return result.model_dump()
 

@@ -22,3 +22,6 @@ def test_health() -> None:
     assert isinstance(payload["cloud_retrieval_critic_ready"], bool)
     assert payload["deterministic_crag_fallback_enabled"] is True
     assert payload["score_verifier_enabled"] is True
+    assert payload["parameter_scorer_enabled"] is True
+    assert 0 < payload["parameter_scorer_confidence_threshold"] <= 1
+    assert 0 < payload["verified_example_confidence_threshold"] <= 1

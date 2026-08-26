@@ -186,6 +186,9 @@ def health() -> dict[str, Any]:
         "cloud_retrieval_critic_ready": bool(getattr(agent, "cloud_available", False)),
         "deterministic_crag_fallback_enabled": settings.deterministic_crag_fallback_enabled,
         "score_verifier_enabled": settings.score_verifier_enabled,
+        "parameter_scorer_enabled": settings.parameter_scorer_enabled,
+        "parameter_scorer_confidence_threshold": settings.parameter_scorer_confidence_threshold,
+        "verified_example_confidence_threshold": settings.verified_example_confidence_threshold,
     }
 
 

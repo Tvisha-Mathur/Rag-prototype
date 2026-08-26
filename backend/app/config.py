@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     deterministic_crag_fallback_enabled: bool = True
     score_verifier_enabled: bool = True
     score_verifier_confidence_threshold: float = 0.75
+    parameter_scorer_enabled: bool = True
+    parameter_scorer_confidence_threshold: float = 0.70
+    verified_example_confidence_threshold: float = 0.62
     embedding_provider: str = "local"
     embedding_local_files_only: bool = True
     huggingface_api_token: str | None = None

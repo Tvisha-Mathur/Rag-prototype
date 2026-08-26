@@ -93,6 +93,50 @@ def test_dimension_vector_search_uses_all_six_parameter_filters():
     assert set(retriever.parameters) == set(HipoClassifier.DIMENSION_PARAMETERS.values())
 
 
+def test_dimension_specific_verified_examples_are_retrieved_for_all_parameters():
+    classifier = HipoClassifier(Retriever(), Analyzer())
+
+    examples = classifier._dimension_verified_examples(
+        "A load fell near a worker", Analyzer().extract_hipo_features("")
+    )
+
+    assert set(examples) == set(HipoClassifier.DIMENSION_PARAMETERS)
+    assert all(items for items in examples.values())
+    assert all(
+        item["dimension"] == field
+        for field, items in examples.items()
+        for item in items
+    )
+
+
+def test_weighted_example_vote_reports_confidence_and_distribution():
+    examples = [
+        {
+            "chunk_id": "a", "verified": True, "score": 0.95,
+            "incident_summary": "falling load above worker", "hazard": "falling object",
+            "safety_impact": 4,
+        },
+        {
+            "chunk_id": "b", "verified": True, "score": 0.80,
+            "incident_summary": "falling load near worker", "hazard": "falling object",
+            "safety_impact": 4,
+        },
+        {
+            "chunk_id": "c", "verified": True, "score": 0.20,
+            "incident_summary": "minor office event", "safety_impact": 2,
+        },
+    ]
+    features = {"hazard": "falling object", "exposure": "worker beneath load"}
+
+    vote = HipoClassifier._weighted_example_vote(
+        "safety_impact", examples, "A falling load passed above a worker", features
+    )
+
+    assert vote["score"] == 4
+    assert vote["confidence"] >= 0.62
+    assert set(vote["distribution"]) == {"2", "4"}
+
+
 def test_complete_rubrics_are_compacted_to_six_model_evidence_items():
     rubrics = {
         field: [
@@ -367,6 +411,109 @@ def test_fallback_scoring_facts_defaults_vip_to_not_involved_when_unmentioned():
     )
 
     assert facts["vip_involved"] is False
+
+
+def test_fallback_scoring_facts_extracts_independent_explicit_rubric_anchors():
+    facts = HipoClassifier.fallback_scoring_facts(
+        "A worker required medical attention. Operations continued with a temporary "
+        "workaround. Equipment replacement was required and the event received negative "
+        "publicity. The worker was directly exposed moments before control was restored."
+    )
+
+    assert facts["safety_potential"] == "medical_attention"
+    assert facts["operational_potential"] == "continued_with_adjustments"
+    assert facts["asset_potential"] == "repair_or_replacement"
+    assert facts["reputation_potential"] == "negative_attention"
+    assert facts["escalation_proximity"] == "small_change"
+    assert set(facts["supporting_phrases"]) == {
+        "safety_potential", "operational_potential", "asset_potential",
+        "reputation_potential", "escalation_proximity",
+    }
+
+
+def test_evidence_fallback_uses_facts_then_verified_example_median():
+    facts = HipoClassifier.fallback_scoring_facts(
+        "A worker required medical attention. No VIP was involved."
+    )
+    examples = [
+        {
+            "verified": True, "safety_impact": 5, "business_continuity": 2,
+            "damage_to_assets": 3, "reputational_impact": 2,
+            "likelihood_of_more_severe_outcome": 3,
+        },
+        {
+            "verified": True, "safety_impact": 4, "business_continuity": 3,
+            "damage_to_assets": 2, "reputational_impact": 3,
+            "likelihood_of_more_severe_outcome": 4,
+        },
+    ]
+
+    assessment = HipoClassifier._evidence_fallback_assessment(facts, examples)
+
+    assert assessment["safety_impact"]["score"] == 3
+    assert assessment["business_continuity"]["score"] == 3
+    assert assessment["damage_to_assets"]["score"] == 3
+    assert assessment["reputational_impact"]["score"] == 3
+    assert assessment["likelihood_of_more_severe_outcome"]["score"] == 4
+    assert assessment["vip_safety_impact"]["score"] == 1
+
+
+def test_fresh_rescore_can_replace_placeholder_by_more_than_one_level():
+    assessment = HipoClassifier.fallback_assessment()
+    verification = {
+        "corrected_scores": {"safety_impact": 4, "likelihood_of_more_severe_outcome": 4},
+        "reasons": {"safety_impact": "Major-injury mechanism was directly supported."},
+    }
+
+    corrected, applied = HipoClassifier._apply_bounded_verification(
+        assessment, verification, allow_fresh_scores=True
+    )
+
+    assert corrected["safety_impact"]["score"] == 4
+    assert corrected["likelihood_of_more_severe_outcome"]["score"] == 4
+    assert applied == ["safety_impact", "likelihood_of_more_severe_outcome"]
+
+
+def test_independent_parameter_scorer_applies_confident_scores_and_abstains():
+    class ParameterAnalyzer(Analyzer):
+        cloud_available = True
+
+        def score_hipo_parameter(
+            self, _incident, parameter, _provisional, _rubric, _examples
+        ):
+            if parameter == "damage_to_assets":
+                return {
+                    "score": None, "confidence": 0.4,
+                    "lower_boundary": 1, "upper_boundary": 2,
+                    "why_selected": "Evidence is incomplete.",
+                    "why_not_adjacent": "Damage extent was not stated.",
+                    "missing_information": ["repair extent"],
+                }
+            return {
+                "score": 3, "confidence": 0.9,
+                "lower_boundary": 2, "upper_boundary": 4,
+                "why_selected": "The score-3 boundary is supported.",
+                "why_not_adjacent": "The score-4 boundary is not supported.",
+                "missing_information": [],
+            }
+
+    classifier = HipoClassifier(Retriever(), ParameterAnalyzer())
+    assessment = Analyzer().classify_hipo(None, None, None)
+    facts = HipoClassifier.fallback_scoring_facts("A worker was injured. A VIP was involved.")
+    rubrics = classifier._complete_rubrics()
+    examples = classifier._dimension_verified_examples(
+        "A worker was injured", Analyzer().extract_hipo_features("")
+    )
+
+    scored, decisions, abstained = classifier._apply_independent_parameter_scoring(
+        "A worker was injured", Analyzer().extract_hipo_features(""), facts,
+        assessment, "gemini", rubrics, examples,
+    )
+
+    assert scored["safety_impact"]["score"] == 3
+    assert decisions["safety_impact"]["provider"] == "gemini_parameter_scorer"
+    assert decisions["safety_impact"]["adjacent_boundary"]["upper"] == 4
+    assert "damage_to_assets" in abstained
 
 
 def test_narrative_constraints_calibrate_direct_exposure_without_cross_dimension_invention():

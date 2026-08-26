@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import { api, apiErrorMessage } from './api';
 
 const initialForm = { incident_text: '' };
+const hiddenFrontendFields = new Set(['location']);
 
 function renderValue(value) {
   if (value === null || value === undefined || value === '') return 'â€”';
@@ -139,9 +140,10 @@ function App() {
   };
 
   const editableFields = Object.entries(pendingResult || {}).filter(
-    ([key]) => key !== 'diagnostics',
+    ([key]) => key !== 'diagnostics' && !hiddenFrontendFields.has(key),
   );
   const fields = Object.entries(pendingResult || {}).flatMap(([key, value]) => {
+    if (hiddenFrontendFields.has(key)) return [];
     if (key !== 'diagnostics') return [[key, value]];
     return [['hipo_review', value?.hipo_review_required ? 'Yes' : 'No']];
   });

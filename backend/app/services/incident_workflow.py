@@ -336,11 +336,15 @@ class IncidentWorkflow:
         def is_approved_pair(domain: Any, subdomain: Any) -> bool:
             if not domain or not subdomain or retriever is None:
                 return False
-            hierarchy = retriever.collection.database["taxonomy_hierarchy"]
-            return hierarchy.find_one(
+            validator = getattr(analyzer, "classification_validator", None)
+            validator_check = getattr(validator, "is_approved_taxonomy_pair", None)
+            if callable(validator_check):
+                return bool(validator_check(str(domain), str(subdomain)))
+            return retriever.collection.find_one(
                 {
+                    "chunk_type": "taxonomy",
                     "domain": domain,
-                    "subdomains": subdomain,
+                    "subdomain": subdomain,
                     "active": True,
                 },
                 {"_id": 1},

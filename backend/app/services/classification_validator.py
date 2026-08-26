@@ -25,13 +25,33 @@ class ClassificationValidator:
     }
 
     def __init__(self, database: Database) -> None:
-        self.taxonomy_collection = database[
-            "taxonomy_hierarchy"
-        ]
+        # Active taxonomy knowledge chunks are the canonical source of valid
+        # domain/subdomain pairs.  The hierarchy collection is a derived view
+        # and must not authorize stale or generated labels.
+        self.taxonomy_collection = database["knowledge_chunks"]
 
         self.severity_collection = database[
             "severity_impact_rules"
         ]
+
+    def is_approved_taxonomy_pair(
+        self,
+        domain: str | None,
+        subdomain: str | None,
+    ) -> bool:
+        """Return whether an exact pair exists in the active taxonomy source."""
+
+        if not domain or not subdomain:
+            return False
+        return self.taxonomy_collection.find_one(
+            {
+                "chunk_type": "taxonomy",
+                "domain": domain,
+                "subdomain": subdomain,
+                "active": True,
+            },
+            {"_id": 1},
+        ) is not None
 
     def identify_impact(
         self,
@@ -139,20 +159,7 @@ class ClassificationValidator:
                 matched_evidence=matched_evidence,
             )
 
-        taxonomy_record = (
-            self.taxonomy_collection.find_one(
-                {
-                    "domain": domain,
-                    "subdomain": subdomain,
-                    "active": True,
-                },
-                {
-                    "_id": 0,
-                },
-            )
-        )
-
-        if taxonomy_record is None:
+        if not self.is_approved_taxonomy_pair(domain, subdomain):
             return self._manual_review(
                 errors=[
                     "The domain and subdomain pair does not "

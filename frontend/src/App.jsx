@@ -4,7 +4,11 @@ import { useMemo, useState } from 'react';
 import { api, apiErrorMessage } from './api';
 
 const initialForm = { incident_text: '' };
-const hiddenFrontendFields = new Set(['location', 'hipo_classification']);
+const hiddenFrontendFields = new Set([
+  'location',
+  'hipo_classification',
+  'affected_party_details',
+]);
 
 const mojibakeReplacements = new Map([
   ['\u00e2\u20ac\u201d', '\u2014'],

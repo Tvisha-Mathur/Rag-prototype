@@ -4,47 +4,20 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, apiErrorMessage } from './api';
 
 const initialForm = { incident_text: '' };
-const intakeQuestions = [
-  {
-    key: 'initiating_event',
-    prompt: 'What happened? Describe the initiating event in one or two sentences.',
-    label: 'Initiating event',
-  },
-  {
-    key: 'exposure',
-    prompt: 'Who or what was exposed or affected?',
-    label: 'Affected or exposed party',
-  },
-  {
-    key: 'hazard',
-    prompt: 'What hazard or event mechanism was involved?',
-    label: 'Hazard or mechanism',
-  },
-  {
-    key: 'actual_consequence',
-    prompt: 'What was the actual consequence, including no injury or no damage if applicable?',
-    label: 'Actual consequence',
-  },
-  {
-    key: 'escalation_proximity',
-    prompt: 'How close was the event to a more severe outcome, and what small change could have made it worse?',
-    label: 'Escalation proximity and credible worse outcome',
-  },
-  {
-    key: 'controls',
-    prompt: 'Which control failed, was missing, or was restored? Include the immediate action taken.',
-    label: 'Controls and immediate response',
-  },
-  {
-    key: 'assets_operations',
-    prompt: 'Were assets or operations affected? Include damage, downtime, disruption, or available workarounds.',
-    label: 'Asset and operational impact',
-  },
-  {
-    key: 'reputation_vip',
-    prompt: 'Was there reputational exposure, a complaint, publicity, regulatory involvement, or VIP involvement?',
-    label: 'Reputation and VIP involvement',
-  },
+const mandatoryQuestions = {
+  date: { label: 'Date', prompt: 'What date did the incident occur?' },
+  time: { label: 'Time', prompt: 'What time did the incident occur?' },
+  location: { label: 'Location', prompt: 'Where did the incident occur?' },
+  primary_event: { label: 'Primary event', prompt: 'What was the primary initiating event?' },
+  primary_hazard: { label: 'Primary hazard', prompt: 'What was the primary hazard or event mechanism?' },
+};
+
+const supportingQuestions = [
+  { key: 'actual_consequence', label: 'Actual consequence', prompt: 'What was the actual consequence, including no injury or no damage if applicable?' },
+  { key: 'exposure', label: 'Exposure', prompt: 'Who or what was exposed, and how close were they to the hazard?' },
+  { key: 'controls', label: 'Controls and response', prompt: 'Which control failed, was missing, or was restored? What immediate action was taken?' },
+  { key: 'assets_operations', label: 'Asset and operational impact', prompt: 'Were assets or operations affected, including damage, downtime, disruption, or a workaround?' },
+  { key: 'reputation_vip', label: 'Reputation and VIP involvement', prompt: 'Was there reputational, regulatory, publicity, complaint, or VIP involvement?' },
 ];
 const hiddenFrontendFields = new Set([
   'location',
@@ -106,7 +79,11 @@ function NestedFields({ value }) {
 function App() {
   const [form, setForm] = useState(initialForm);
   const [messageDraft, setMessageDraft] = useState('');
-  const [intakeAnswers, setIntakeAnswers] = useState([]);
+  const [conversation, setConversation] = useState([]);
+  const [intakePhase, setIntakePhase] = useState('narrative');
+  const [missingMandatory, setMissingMandatory] = useState([]);
+  const [supportingIndex, setSupportingIndex] = useState(0);
+  const [intakeValidation, setIntakeValidation] = useState(null);
   const [sessionId, setSessionId] = useState('');
   const [stepInfo, setStepInfo] = useState(null);
   const [pendingResult, setPendingResult] = useState(null);
@@ -132,29 +109,72 @@ function App() {
     setCorrectionDraft({});
   };
 
-  const assembledNarrative = useMemo(() => intakeAnswers.map((answer, index) => (
-    `${intakeQuestions[index].label}: ${answer}`
-  )).join(' '), [intakeAnswers]);
-
-  const intakeComplete = intakeAnswers.length === intakeQuestions.length;
+  const intakeComplete = intakePhase === 'review';
+  const currentIntakeQuestion = intakePhase === 'narrative'
+    ? { label: 'Mandatory information', prompt: 'Describe the incident in one narrative. It must include the date, time, location, primary event, and primary hazard.' }
+    : intakePhase === 'mandatory'
+      ? mandatoryQuestions[missingMandatory[0]]
+      : intakePhase === 'supporting'
+        ? supportingQuestions[supportingIndex]
+        : null;
 
   useEffect(() => {
     const windowElement = chatWindowRef.current;
     if (windowElement) windowElement.scrollTo({ top: windowElement.scrollHeight, behavior: 'smooth' });
-  }, [intakeAnswers, loading, pendingResult, completed, error]);
+  }, [conversation, intakePhase, loading, pendingResult, completed, error]);
 
-  const submitIntakeAnswer = () => {
+  const validateMandatoryIntake = async (narrative) => {
+    setLoading(true);
+    setError('');
+    try {
+      const { data } = await api.post('/incident/intake/validate', { incident_text: narrative });
+      setIntakeValidation(data);
+      if (data.mandatory_complete) {
+        setMissingMandatory([]);
+        setIntakePhase('supporting');
+        setSupportingIndex(0);
+      } else {
+        setMissingMandatory(data.missing_mandatory_information || []);
+        setIntakePhase('mandatory');
+      }
+    } catch (err) {
+      setError(apiErrorMessage(err, 'Unable to validate the mandatory incident information.'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const submitIntakeAnswer = async () => {
     const answer = messageDraft.trim();
-    if (!answer || intakeComplete || loading || stepInfo) return;
-    const updatedAnswers = [...intakeAnswers, answer];
-    setIntakeAnswers(updatedAnswers);
+    if (!answer || !currentIntakeQuestion || loading || stepInfo) return;
+    setConversation((current) => [...current, {
+      category: intakePhase === 'supporting' ? 'Supporting information' : 'Mandatory information',
+      question: currentIntakeQuestion.prompt,
+      answer,
+    }]);
     setMessageDraft('');
-    if (updatedAnswers.length === intakeQuestions.length) {
-      setForm({
-        incident_text: updatedAnswers.map((item, index) => (
-          `${intakeQuestions[index].label}: ${item}`
-        )).join(' '),
-      });
+
+    if (intakePhase === 'narrative') {
+      setForm({ incident_text: answer });
+      await validateMandatoryIntake(answer);
+      return;
+    }
+
+    const updatedNarrative = `${form.incident_text} ${currentIntakeQuestion.label}: ${answer}.`;
+    setForm({ incident_text: updatedNarrative });
+    if (intakePhase === 'mandatory') {
+      const remaining = missingMandatory.slice(1);
+      setMissingMandatory(remaining);
+      if (!remaining.length) await validateMandatoryIntake(updatedNarrative);
+      return;
+    }
+
+    if (intakePhase === 'supporting') {
+      if (supportingIndex + 1 < supportingQuestions.length) {
+        setSupportingIndex((index) => index + 1);
+      } else {
+        setIntakePhase('review');
+      }
     }
   };
 
@@ -229,7 +249,11 @@ function App() {
   const reset = () => {
     setForm(initialForm);
     setMessageDraft('');
-    setIntakeAnswers([]);
+    setConversation([]);
+    setIntakePhase('narrative');
+    setMissingMandatory([]);
+    setSupportingIndex(0);
+    setIntakeValidation(null);
     setSessionId('');
     setStepInfo(null);
     setPendingResult(null);
@@ -258,46 +282,58 @@ function App() {
             <h1>Incident Assistant</h1>
             <p className="subtle">RAG and CRAG incident analysis</p>
           </div>
-          {(stepInfo || submittedNarrative || intakeAnswers.length > 0) && <button className="new-chat-btn" onClick={reset} disabled={loading}>
+          {(stepInfo || submittedNarrative || conversation.length > 0) && <button className="new-chat-btn" onClick={reset} disabled={loading}>
             New analysis
           </button>}
         </header>
 
         <section className="chat-window" aria-live="polite" ref={chatWindowRef}>
-          {!intakeAnswers.length && !stepInfo && <div className="message-row assistant-row">
+          {!conversation.length && !stepInfo && <div className="message-row assistant-row">
             <div className="message-avatar">IA</div>
             <div className="message-bubble assistant-bubble">
-              <p>I will collect the information required for HIPO assessment one step at a time. Enter <strong>Unknown</strong> when a fact is unavailable.</p>
+              <p>Start with one incident narrative. I will check the mandatory information first and ask only for anything missing. Supporting information will be collected separately.</p>
             </div>
           </div>}
 
-          {submittedNarrative && !intakeAnswers.length && <div className="message-row user-row">
-            <div className="message-bubble user-bubble">{submittedNarrative}</div>
-          </div>}
-
-          {intakeQuestions.map((question, index) => {
-            if (index > intakeAnswers.length) return null;
-            if (index === intakeAnswers.length && intakeComplete) return null;
-            return <div className="intake-exchange" key={question.key}>
+          {conversation.map((exchange, index) => <div className="intake-exchange" key={`${exchange.category}-${index}`}>
               <div className="message-row assistant-row">
                 <div className="message-avatar">IA</div>
                 <div className="message-bubble assistant-bubble">
-                  <span className="question-progress">Step {index + 1} of {intakeQuestions.length}</span>
-                  <p>{question.prompt}</p>
+                  <span className="question-progress">{exchange.category}</span>
+                  <p>{exchange.question}</p>
                 </div>
               </div>
-              {intakeAnswers[index] && <div className="message-row user-row">
-                <div className="message-bubble user-bubble">{intakeAnswers[index]}</div>
-              </div>}
-            </div>;
-          })}
+              <div className="message-row user-row">
+                <div className="message-bubble user-bubble">{exchange.answer}</div>
+              </div>
+            </div>)}
+
+          {currentIntakeQuestion && !submittedNarrative && <div className="message-row assistant-row">
+            <div className="message-avatar">IA</div>
+            <div className="message-bubble assistant-bubble">
+              <span className="question-progress">
+                {intakePhase === 'supporting' ? 'Supporting information (optional)' : 'Mandatory information'}
+              </span>
+              <p>{currentIntakeQuestion.prompt}</p>
+            </div>
+          </div>}
+
+          {intakeValidation?.mandatory_complete && !submittedNarrative && <div className="message-row assistant-row">
+            <div className="message-avatar">IA</div>
+            <div className="message-bubble assistant-bubble taxonomy-trigger">
+              <span className="question-progress">Mandatory gate complete</span>
+              <p><strong>Domain:</strong> {intakeValidation.domain || 'Review required'}</p>
+              <p><strong>Subdomain:</strong> {intakeValidation.subdomain || 'Review required'}</p>
+              <p><strong>Event:</strong> {intakeValidation.event_type || 'Review required'}</p>
+            </div>
+          </div>}
 
           {intakeComplete && !submittedNarrative && <div className="message-row assistant-row">
             <div className="message-avatar">IA</div>
             <div className="message-bubble assistant-bubble intake-review">
               <span className="question-progress">Ready for analysis</span>
               <h3>Review the assembled incident narrative</h3>
-              <p>{assembledNarrative}</p>
+              <p>{form.incident_text}</p>
               <div className="button-row">
                 <button className="primary-btn" onClick={startAnalysis} disabled={loading}>Run analysis</button>
                 <button className="secondary-btn" onClick={reset} disabled={loading}>Start again</button>

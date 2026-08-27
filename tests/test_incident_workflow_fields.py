@@ -67,6 +67,25 @@ def test_cloud_feature_summary_is_concisely_capped_before_display():
     assert result["incident_summary"].endswith(".")
 
 
+def test_intake_gate_reports_missing_mandatory_fields_before_taxonomy():
+    class Analyzer:
+        llm_analyzer = None
+
+        @staticmethod
+        def detect_incident_mechanism(_text):
+            return {"primary_mechanism": "unknown", "matched_term": None}
+
+    result = IncidentWorkflow().validate_intake("A brief incident occurred.", Analyzer())
+
+    assert result["mandatory_complete"] is False
+    assert set(result["missing_mandatory_information"]) == {
+        "date", "time", "location", "primary_event", "primary_hazard",
+    }
+    assert result["domain"] is None
+    assert result["subdomain"] is None
+    assert result["event_type"] is None
+
+
 def test_final_location_prefers_room_number_over_area():
     facts = IncidentWorkflow()._build_facts_result(
         "A guest slipped in the east corridor near room 204."

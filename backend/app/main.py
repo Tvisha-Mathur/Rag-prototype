@@ -257,6 +257,17 @@ def start_incident_workflow(
     return response
 
 
+@app.post("/incident/intake/validate")
+def validate_incident_intake(request: StartIncidentRequest) -> dict[str, Any]:
+    """Return missing mandatory facts and route taxonomy only after they are complete."""
+    incident_text = request.incident_text.strip()
+    if not incident_text:
+        raise HTTPException(status_code=400, detail="Incident narrative cannot be empty.")
+    workflow: IncidentWorkflow = app.state.workflow
+    analyzer = getattr(app.state, "analyzer", None)
+    return workflow.validate_intake(incident_text, analyzer)
+
+
 def process_incident_workflow_job(session_id: str) -> None:
     """Run long incident analysis after the start response is returned."""
 

@@ -304,6 +304,73 @@ class IncidentWorkflow:
             "immediate_action_taken": action_match.group(1).strip() if action_match else None,
         }
 
+    def validate_intake(self, incident_text: str, analyzer: Any | None) -> dict[str, Any]:
+        """Validate mandatory intake facts before taxonomy and event routing."""
+        features: dict[str, Any] = {}
+        llm_analyzer = getattr(analyzer, "llm_analyzer", None)
+        if llm_analyzer is not None:
+            try:
+                features = llm_analyzer.extract_hipo_features(incident_text)
+            except Exception as exc:
+                print(f"Mandatory intake extraction failed; using deterministic checks: {exc}")
+
+        facts = self._build_facts_result(
+            incident_text,
+            analyzer=None,
+            shared_features=features,
+        )
+        mechanism = (
+            analyzer.detect_incident_mechanism(incident_text)
+            if analyzer is not None
+            else {}
+        )
+        mechanism_name = mechanism.get("primary_mechanism")
+        labelled_location = re.search(
+            r"\bLocation:\s*([^.;]+)", incident_text, re.IGNORECASE
+        )
+        labelled_event = re.search(
+            r"\bPrimary event:\s*([^.;]+)", incident_text, re.IGNORECASE
+        )
+        labelled_hazard = re.search(
+            r"\bPrimary hazard:\s*([^.;]+)", incident_text, re.IGNORECASE
+        )
+        primary_event = features.get("primary_event") or (
+            labelled_event.group(1).strip() if labelled_event else None
+        )
+        primary_hazard = features.get("hazard") or (
+            labelled_hazard.group(1).strip() if labelled_hazard else None
+        )
+        if not primary_event and mechanism_name not in {None, "unknown"}:
+            primary_event = self._initiating_event_text(incident_text)
+        if not primary_hazard and mechanism_name not in {None, "unknown"}:
+            primary_hazard = mechanism.get("matched_term") or mechanism_name.replace("_", " ")
+
+        mandatory = {
+            "date": facts.get("date"),
+            "time": facts.get("time"),
+            "location": facts.get("location") or (
+                f"Room {facts['room_number']}" if facts.get("room_number") else None
+            ) or (labelled_location.group(1).strip() if labelled_location else None),
+            "primary_event": primary_event,
+            "primary_hazard": primary_hazard,
+        }
+        missing = [key for key, value in mandatory.items() if not value]
+        taxonomy = {"domain": None, "subdomain": None}
+        event = None
+        if not missing:
+            taxonomy = self._build_taxonomy_result(
+                incident_text, analyzer, shared_features=features
+            )
+            event = self._build_actual_near_miss_result(incident_text).get("classification")
+        return {
+            "mandatory_information": mandatory,
+            "missing_mandatory_information": missing,
+            "mandatory_complete": not missing,
+            "domain": taxonomy.get("domain"),
+            "subdomain": taxonomy.get("subdomain"),
+            "event_type": event,
+        }
+
     def _fallback_incident_summary(self, text: str) -> str | None:
         """Return a short factual summary if the model is unavailable."""
 

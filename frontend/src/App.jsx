@@ -71,6 +71,7 @@ function App() {
   const [completed, setCompleted] = useState(false);
   const [editingCorrection, setEditingCorrection] = useState(false);
   const [correctionDraft, setCorrectionDraft] = useState({});
+  const [submittedNarrative, setSubmittedNarrative] = useState('');
 
   const progressLabel = useMemo(() => {
     if (!stepInfo) return 'Start a new incident review';
@@ -87,6 +88,9 @@ function App() {
   };
 
   const startAnalysis = async () => {
+    const narrative = form.incident_text.trim();
+    if (!narrative) return;
+    setSubmittedNarrative(narrative);
     setLoading(true);
     setError('');
     setCompleted(false);
@@ -159,6 +163,7 @@ function App() {
     setCompleted(false);
     setEditingCorrection(false);
     setCorrectionDraft({});
+    setSubmittedNarrative('');
     setError('');
   };
 
@@ -173,31 +178,53 @@ function App() {
 
   return (
     <div className="app-shell">
-      <main className="container">
-        <header className="header-card">
-          <div><h1>Incident Assistant</h1></div>
-          <p className="subtle">Generate the complete analysis, review it once, and save.</p>
+      <main className="chat-container">
+        <header className="chat-header">
+          <div className="assistant-avatar" aria-hidden="true">IA</div>
+          <div>
+            <h1>Incident Assistant</h1>
+            <p className="subtle">RAG and CRAG incident analysis</p>
+          </div>
+          {(stepInfo || submittedNarrative) && <button className="new-chat-btn" onClick={reset} disabled={loading}>
+            New analysis
+          </button>}
         </header>
 
-        <section className="panel">
-          <label className="textarea-label" htmlFor="incident-text">Incident narrative</label>
-          <textarea id="incident-text" value={form.incident_text}
-            onChange={(event) => setForm({ incident_text: event.target.value })}
-            placeholder="Paste the incident report or narrative here..." disabled={loading} />
-          <button className="primary-btn" onClick={startAnalysis}
-            disabled={loading || !form.incident_text.trim()}>
-            {loading && !sessionId ? 'Analyzing...' : 'Start analysis'}
-          </button>
-        </section>
+        <section className="chat-window" aria-live="polite">
+          {!submittedNarrative && !stepInfo && <div className="message-row assistant-row">
+            <div className="message-avatar">IA</div>
+            <div className="message-bubble assistant-bubble">
+              <p>Send me an incident narrative. I will return a concise factual summary, approved taxonomy, parameter scores, and the final HIPO review status.</p>
+            </div>
+          </div>}
 
-        {error && <div className="error-box" role="alert">{error}</div>}
+          {submittedNarrative && <div className="message-row user-row">
+            <div className="message-bubble user-bubble">{submittedNarrative}</div>
+          </div>}
 
-        {stepInfo && <section className="panel">
-          <div className="progress-row"><strong>{progressLabel}</strong></div>
+          {loading && !pendingResult && <div className="message-row assistant-row">
+            <div className="message-avatar">IA</div>
+            <div className="message-bubble assistant-bubble typing-bubble">
+              <span /><span /><span />
+              <strong>Analyzing the incident...</strong>
+            </div>
+          </div>}
 
-          {pendingResult && <>
-            <div className="result-card">
-              <h3>{normalizeDisplayText(stepInfo.step_title || 'Current step result')}</h3>
+          {error && <div className="message-row assistant-row">
+            <div className="message-avatar error-avatar">!</div>
+            <div className="message-bubble error-bubble" role="alert">{error}</div>
+          </div>}
+
+          {stepInfo && pendingResult && <div className="message-row assistant-row">
+            <div className="message-avatar">IA</div>
+            <div className="message-bubble assistant-bubble analysis-message">
+              <div className="message-heading">
+                <div>
+                  <span className="status-label">{progressLabel}</span>
+                  <h3>{normalizeDisplayText(stepInfo.step_title || 'Incident analysis')}</h3>
+                </div>
+              </div>
+
               <div className="analysis-groups">
                 {fields.map(([key, value]) => <section
                   key={key}
@@ -207,9 +234,8 @@ function App() {
                   <FieldValue value={value} />
                 </section>)}
               </div>
-            </div>
 
-            <div className="confirmation-card">
+            <div className="chat-confirmation">
               <h3>{normalizeDisplayText(stepInfo.question || 'Is this response correct?')}</h3>
               {!editingCorrection ? <div className="button-row">
                 <button className="confirm-yes" onClick={() => confirmStep(true)} disabled={loading}>
@@ -233,13 +259,36 @@ function App() {
                 </div>
               </div>}
             </div>
-          </>}
-
-          {completed && <div className="final-card">
-            <h3>Response saved</h3><p>The confirmed incident record has been saved to MongoDB.</p>
-            <button className="primary-btn" onClick={reset}>Start new incident</button>
+            </div>
           </div>}
-        </section>}
+
+          {completed && <div className="message-row assistant-row">
+            <div className="message-avatar">IA</div>
+            <div className="message-bubble assistant-bubble saved-message">
+              <h3>Response saved</h3>
+              <p>The confirmed incident record has been saved to MongoDB.</p>
+              <button className="primary-btn" onClick={reset}>Start new incident</button>
+            </div>
+          </div>}
+        </section>
+
+        <section className="chat-composer">
+          <label className="sr-only" htmlFor="incident-text">Incident narrative</label>
+          <textarea id="incident-text" value={form.incident_text}
+            onChange={(event) => setForm({ incident_text: event.target.value })}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                if (!loading && form.incident_text.trim()) startAnalysis();
+              }
+            }}
+            placeholder="Describe the incident..." disabled={loading || Boolean(stepInfo)} />
+          <button className="send-btn" onClick={startAnalysis}
+            disabled={loading || Boolean(stepInfo) || !form.incident_text.trim()}>
+            {loading ? 'Analyzing' : 'Send'}
+          </button>
+          <p className="composer-hint">Press Enter to send · Shift + Enter for a new line</p>
+        </section>
       </main>
     </div>
   );

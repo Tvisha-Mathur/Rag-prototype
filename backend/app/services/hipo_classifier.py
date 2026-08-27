@@ -530,53 +530,39 @@ class HipoClassifier:
     def _dimension_evidence(
         self, incident_text: str, features: dict[str, Any]
     ) -> dict[str, list[dict[str, Any]]]:
+        """Retrieve policy candidates once, then partition them by parameter."""
         anchor = " | ".join(str(value) for value in (
             features.get("hazard"), features.get("exposure"), features.get("energy_source"),
             features.get("credible_worst_case"),
         ) if value) or incident_text
-
-        def retrieve(field: str, terms: str) -> tuple[str, list[dict[str, Any]]]:
-            query = f"{anchor} | {terms}"
-            try:
-                items = self.retriever.retrieve(
-                    query, chunk_type="hipo_policy",
-                    parameter=self.DIMENSION_PARAMETERS[field],
-                    limit=5, num_candidates=80,
-                )
-            except RuntimeError as exc:
-                print(f"Parameter-filtered vector retrieval unavailable; using rubric rows: {exc}")
-                items = []
-            return field, [{**item, "dimension": field, "channel": "dimension_rule"} for item in items]
-
-        with ThreadPoolExecutor(max_workers=6) as pool:
-            futures = [pool.submit(retrieve, field, terms) for field, terms in self.DIMENSION_QUERIES.items()]
-            return dict(future.result() for future in futures)
+        try:
+            items = self.retriever.retrieve(
+                f"{anchor} | HIPO impact likelihood scoring boundaries",
+                chunk_type="hipo_policy", limit=30, num_candidates=150,
+            )
+        except RuntimeError as exc:
+            print(f"Dimension policy retrieval unavailable; using complete rubrics: {exc}")
+            items = []
+        return {
+            field: [
+                {**item, "dimension": field, "channel": "dimension_rule"}
+                for item in items
+                if item.get("parameter") == parameter
+            ][:5]
+            for field, parameter in self.DIMENSION_PARAMETERS.items()
+        }
 
     def _dimension_verified_examples(
         self,
         incident_text: str,
         features: dict[str, Any],
+        candidates: list[dict[str, Any]],
     ) -> dict[str, list[dict[str, Any]]]:
-        """Retrieve a separate verified-example set for every score dimension."""
-        mechanism = " | ".join(str(value) for value in (
-            features.get("primary_event"), features.get("hazard"),
-            features.get("exposure"), features.get("energy_source"),
-        ) if value) or incident_text
-
-        def retrieve(field: str, terms: str) -> tuple[str, list[dict[str, Any]]]:
-            query = f"{mechanism} | {terms}"
-            try:
-                items = self.retriever.retrieve(
-                    query,
-                    chunk_type="historical_incident",
-                    limit=6,
-                    num_candidates=180,
-                )
-            except Exception as exc:
-                print(f"Verified-example retrieval unavailable for {field}: {exc}")
-                return field, []
+        """Partition one shared historical search into dimension-specific examples."""
+        result: dict[str, list[dict[str, Any]]] = {}
+        for field in self.DIMENSION_PARAMETERS:
             verified: list[dict[str, Any]] = []
-            for item in items:
+            for item in candidates:
                 value = (
                     item.get("vip_safety")
                     if field == "vip_safety_impact"
@@ -587,14 +573,8 @@ class HipoClassifier:
                         **item, field: value, "dimension": field,
                         "channel": "dimension_verified_example",
                     })
-            return field, verified[:5]
-
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = [
-                pool.submit(retrieve, field, terms)
-                for field, terms in self.DIMENSION_QUERIES.items()
-            ]
-            return dict(future.result() for future in futures)
+            result[field] = verified[:5]
+        return result
 
     @classmethod
     def _weighted_example_vote(
@@ -669,35 +649,46 @@ class HipoClassifier:
         resolved = {field: dict(value) for field, value in assessment.items()}
         decisions: dict[str, dict[str, Any]] = {}
         abstained: list[str] = []
-        scorer = getattr(self.llm_analyzer, "score_hipo_parameter", None)
+        batch_scorer = getattr(self.llm_analyzer, "score_hipo_parameters", None)
+        legacy_scorer = getattr(self.llm_analyzer, "score_hipo_parameter", None)
         cloud_enabled = bool(
             settings.parameter_scorer_enabled
             and getattr(self.llm_analyzer, "cloud_available", False)
-            and callable(scorer)
+            and (callable(batch_scorer) or callable(legacy_scorer))
         )
 
         cloud_results: dict[str, dict[str, Any]] = {}
         if cloud_enabled:
-            def score(field: str) -> tuple[str, dict[str, Any]]:
-                rubric = self._group_rubrics({field: complete_rubrics.get(field, [])})[0]
-                result = scorer(
-                    incident_text,
-                    field,
-                    int((resolved.get(field) or {}).get("score", 1)),
-                    rubric,
-                    dimension_examples.get(field, []),
-                )
-                return field, result
-
-            with ThreadPoolExecutor(max_workers=3) as pool:
-                futures = {
-                    field: pool.submit(score, field)
-                    for field in self.DIMENSION_PARAMETERS
-                    if not (field == "vip_safety_impact" and facts.get("vip_involved") is False)
-                }
-                for field, future in futures.items():
+            if callable(batch_scorer):
+                try:
+                    cloud_results = batch_scorer(
+                        incident_text,
+                        {
+                            field: int((resolved.get(field) or {}).get("score", 1))
+                            for field in self.DIMENSION_PARAMETERS
+                        },
+                        self._group_rubrics(complete_rubrics),
+                        dimension_examples,
+                    )
+                except Exception as exc:
+                    print(f"Batched independent parameter scorer unavailable: {exc}")
+            elif callable(legacy_scorer):
+                # Compatibility path for local/custom analyzers. Keep it sequential
+                # so one analysis cannot starve Render's health and polling requests.
+                for field in self.DIMENSION_PARAMETERS:
+                    if field == "vip_safety_impact" and facts.get("vip_involved") is False:
+                        continue
                     try:
-                        _, cloud_results[field] = future.result()
+                        rubric = self._group_rubrics(
+                            {field: complete_rubrics.get(field, [])}
+                        )[0]
+                        cloud_results[field] = legacy_scorer(
+                            incident_text,
+                            field,
+                            int((resolved.get(field) or {}).get("score", 1)),
+                            rubric,
+                            dimension_examples.get(field, []),
+                        )
                     except Exception as exc:
                         print(f"Independent {field} scorer unavailable: {exc}")
 
@@ -1284,20 +1275,19 @@ class HipoClassifier:
         with ThreadPoolExecutor(max_workers=3) as pool:
             historical_future = pool.submit(
                 self.retriever.retrieve, retrieval_query,
-                chunk_type="historical_incident", limit=12, num_candidates=200,
+                chunk_type="historical_incident", limit=30, num_candidates=250,
             )
             hazards_future = pool.submit(self._bm25_hazards, retrieval_query, 8)
             rules_future = pool.submit(
                 self.retriever.retrieve, retrieval_query,
                 chunk_type="hipo_policy", limit=6, num_candidates=60,
             )
-            dimension_examples_future = pool.submit(
-                self._dimension_verified_examples, incident_text, features
-            )
             historical = historical_future.result()
             hazard_matches = hazards_future.result()
             retrieved_rules = rules_future.result()
-            dimension_examples = dimension_examples_future.result()
+        dimension_examples = self._dimension_verified_examples(
+            incident_text, features, historical
+        )
         critical_rules = self._critical_rules()
         complete_rubrics = self._complete_rubrics()
         dimension_evidence = self._dimension_evidence(incident_text, features)

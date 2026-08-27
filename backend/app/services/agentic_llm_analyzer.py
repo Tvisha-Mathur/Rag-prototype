@@ -53,6 +53,15 @@ class ParameterScoreDecision(BaseModel):
     missing_information: list[str] = Field(default_factory=list, max_length=4)
 
 
+class ParameterScoreBatch(BaseModel):
+    safety_impact: ParameterScoreDecision
+    damage_to_assets: ParameterScoreDecision
+    business_continuity: ParameterScoreDecision
+    reputational_impact: ParameterScoreDecision
+    vip_safety_impact: ParameterScoreDecision
+    likelihood_of_more_severe_outcome: ParameterScoreDecision
+
+
 class CloudCircuitOpenError(RuntimeError):
     pass
 
@@ -405,6 +414,35 @@ Parameter: {parameter}\nIncident: {incident}\nProvisional score: {provisional}\n
             provisional=provisional_score,
             rubric=json.dumps(rubric, default=str),
             examples=json.dumps(self._compact_evidence(verified_examples[:5]), default=str),
+        )
+        return result.model_dump()
+
+    def score_hipo_parameters(
+        self,
+        incident_text: str,
+        provisional_scores: dict[str, int],
+        rubrics: list[dict[str, Any]],
+        verified_examples: dict[str, list[dict[str, Any]]],
+    ) -> dict[str, dict[str, Any]]:
+        """Score all dimensions independently in one provider request."""
+        compact_examples = {
+            field: self._compact_evidence(items[:5])
+            for field, items in verified_examples.items()
+        }
+        result = self._predict(
+            ParameterScoreBatch,
+            """Score all six HIPO parameters, but decide each parameter independently. For each
+parameter use only its matching complete 1-5 rubric, its matching reviewer-verified examples,
+and incident facts relevant to that parameter. Compare the selected score with adjacent
+boundaries and explain why the selected boundary is met and the adjacent one is not. Do not
+transfer consequences across parameters. Return score=null for a parameter when its evidence
+cannot distinguish a defensible boundary. VIP must be 1 unless VIP involvement is explicit.
+The provisional scores are context, not authority.
+Incident: {incident}\nProvisional scores: {provisional}\nRubrics: {rubrics}\nVerified examples by parameter: {examples}""",
+            incident=self._safe_incident(incident_text),
+            provisional=json.dumps(provisional_scores, default=str),
+            rubrics=json.dumps(rubrics, default=str),
+            examples=json.dumps(compact_examples, default=str),
         )
         return result.model_dump()
 

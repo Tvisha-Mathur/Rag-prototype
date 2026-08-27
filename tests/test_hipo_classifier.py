@@ -86,18 +86,21 @@ def test_full_pipeline_returns_rule_validated_hipo():
     assert sum(len(rows) for rows in result["retrieval"]["complete_rubrics"].values()) == 30
 
 
-def test_dimension_vector_search_uses_all_six_parameter_filters():
+def test_dimension_vector_search_does_not_require_parameter_filter_index():
     retriever = Retriever()
     HipoClassifier(retriever, Analyzer()).classify("A load fell near a worker")
 
-    assert set(retriever.parameters) == set(HipoClassifier.DIMENSION_PARAMETERS.values())
+    assert retriever.parameters == []
 
 
 def test_dimension_specific_verified_examples_are_retrieved_for_all_parameters():
     classifier = HipoClassifier(Retriever(), Analyzer())
+    candidates = classifier.retriever.retrieve(
+        "A load fell near a worker", chunk_type="historical_incident"
+    )
 
     examples = classifier._dimension_verified_examples(
-        "A load fell near a worker", Analyzer().extract_hipo_features("")
+        "A load fell near a worker", Analyzer().extract_hipo_features(""), candidates
     )
 
     assert set(examples) == set(HipoClassifier.DIMENSION_PARAMETERS)
@@ -501,8 +504,11 @@ def test_independent_parameter_scorer_applies_confident_scores_and_abstains():
     assessment = Analyzer().classify_hipo(None, None, None)
     facts = HipoClassifier.fallback_scoring_facts("A worker was injured. A VIP was involved.")
     rubrics = classifier._complete_rubrics()
+    candidates = classifier.retriever.retrieve(
+        "A worker was injured", chunk_type="historical_incident"
+    )
     examples = classifier._dimension_verified_examples(
-        "A worker was injured", Analyzer().extract_hipo_features("")
+        "A worker was injured", Analyzer().extract_hipo_features(""), candidates
     )
 
     scored, decisions, abstained = classifier._apply_independent_parameter_scoring(
@@ -514,6 +520,55 @@ def test_independent_parameter_scorer_applies_confident_scores_and_abstains():
     assert decisions["safety_impact"]["provider"] == "gemini_parameter_scorer"
     assert decisions["safety_impact"]["adjacent_boundary"]["upper"] == 4
     assert "damage_to_assets" in abstained
+
+
+def test_batched_parameter_scorer_is_called_once_for_all_dimensions():
+    class BatchAnalyzer(Analyzer):
+        cloud_available = True
+
+        def __init__(self):
+            self.batch_calls = 0
+
+        def score_hipo_parameters(
+            self, _incident, _provisional_scores, _rubrics, _examples
+        ):
+            self.batch_calls += 1
+            return {
+                field: {
+                    "score": 3,
+                    "confidence": 0.9,
+                    "lower_boundary": 2,
+                    "upper_boundary": 4,
+                    "why_selected": "The score-3 boundary is supported.",
+                    "why_not_adjacent": "Adjacent boundaries are unsupported.",
+                    "missing_information": [],
+                }
+                for field in HipoClassifier.DIMENSION_PARAMETERS
+            }
+
+        def score_hipo_parameter(self, *_args, **_kwargs):
+            raise AssertionError("The legacy per-parameter scorer must not run")
+
+    analyzer = BatchAnalyzer()
+    classifier = HipoClassifier(Retriever(), analyzer)
+    features = analyzer.extract_hipo_features("")
+    facts = HipoClassifier.fallback_scoring_facts("A worker was injured.")
+    candidates = classifier.retriever.retrieve(
+        "A worker was injured", chunk_type="historical_incident"
+    )
+
+    scored, decisions, _ = classifier._apply_independent_parameter_scoring(
+        "A worker was injured", features, facts,
+        analyzer.classify_hipo(None, None, None), "gemini",
+        classifier._complete_rubrics(),
+        classifier._dimension_verified_examples(
+            "A worker was injured", features, candidates
+        ),
+    )
+
+    assert analyzer.batch_calls == 1
+    assert scored["safety_impact"]["score"] == 3
+    assert decisions["safety_impact"]["provider"] == "gemini_parameter_scorer"
 
 
 def test_narrative_constraints_calibrate_direct_exposure_without_cross_dimension_invention():

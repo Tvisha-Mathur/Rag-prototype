@@ -1,9 +1,51 @@
 ﻿/** Purpose: Implements the incident workflow user interface. Used by main.jsx as the root React component. */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, apiErrorMessage } from './api';
 
 const initialForm = { incident_text: '' };
+const intakeQuestions = [
+  {
+    key: 'initiating_event',
+    prompt: 'What happened? Describe the initiating event in one or two sentences.',
+    label: 'Initiating event',
+  },
+  {
+    key: 'exposure',
+    prompt: 'Who or what was exposed or affected?',
+    label: 'Affected or exposed party',
+  },
+  {
+    key: 'hazard',
+    prompt: 'What hazard or event mechanism was involved?',
+    label: 'Hazard or mechanism',
+  },
+  {
+    key: 'actual_consequence',
+    prompt: 'What was the actual consequence, including no injury or no damage if applicable?',
+    label: 'Actual consequence',
+  },
+  {
+    key: 'escalation_proximity',
+    prompt: 'How close was the event to a more severe outcome, and what small change could have made it worse?',
+    label: 'Escalation proximity and credible worse outcome',
+  },
+  {
+    key: 'controls',
+    prompt: 'Which control failed, was missing, or was restored? Include the immediate action taken.',
+    label: 'Controls and immediate response',
+  },
+  {
+    key: 'assets_operations',
+    prompt: 'Were assets or operations affected? Include damage, downtime, disruption, or available workarounds.',
+    label: 'Asset and operational impact',
+  },
+  {
+    key: 'reputation_vip',
+    prompt: 'Was there reputational exposure, a complaint, publicity, regulatory involvement, or VIP involvement?',
+    label: 'Reputation and VIP involvement',
+  },
+];
 const hiddenFrontendFields = new Set([
   'location',
   'hipo_classification',
@@ -63,6 +105,8 @@ function NestedFields({ value }) {
 
 function App() {
   const [form, setForm] = useState(initialForm);
+  const [messageDraft, setMessageDraft] = useState('');
+  const [intakeAnswers, setIntakeAnswers] = useState([]);
   const [sessionId, setSessionId] = useState('');
   const [stepInfo, setStepInfo] = useState(null);
   const [pendingResult, setPendingResult] = useState(null);
@@ -72,6 +116,7 @@ function App() {
   const [editingCorrection, setEditingCorrection] = useState(false);
   const [correctionDraft, setCorrectionDraft] = useState({});
   const [submittedNarrative, setSubmittedNarrative] = useState('');
+  const chatWindowRef = useRef(null);
 
   const progressLabel = useMemo(() => {
     if (!stepInfo) return 'Start a new incident review';
@@ -85,6 +130,32 @@ function App() {
     setCompleted(Boolean(data.completed));
     setEditingCorrection(false);
     setCorrectionDraft({});
+  };
+
+  const assembledNarrative = useMemo(() => intakeAnswers.map((answer, index) => (
+    `${intakeQuestions[index].label}: ${answer}`
+  )).join(' '), [intakeAnswers]);
+
+  const intakeComplete = intakeAnswers.length === intakeQuestions.length;
+
+  useEffect(() => {
+    const windowElement = chatWindowRef.current;
+    if (windowElement) windowElement.scrollTo({ top: windowElement.scrollHeight, behavior: 'smooth' });
+  }, [intakeAnswers, loading, pendingResult, completed, error]);
+
+  const submitIntakeAnswer = () => {
+    const answer = messageDraft.trim();
+    if (!answer || intakeComplete || loading || stepInfo) return;
+    const updatedAnswers = [...intakeAnswers, answer];
+    setIntakeAnswers(updatedAnswers);
+    setMessageDraft('');
+    if (updatedAnswers.length === intakeQuestions.length) {
+      setForm({
+        incident_text: updatedAnswers.map((item, index) => (
+          `${intakeQuestions[index].label}: ${item}`
+        )).join(' '),
+      });
+    }
   };
 
   const startAnalysis = async () => {
@@ -157,6 +228,8 @@ function App() {
 
   const reset = () => {
     setForm(initialForm);
+    setMessageDraft('');
+    setIntakeAnswers([]);
     setSessionId('');
     setStepInfo(null);
     setPendingResult(null);
@@ -185,21 +258,51 @@ function App() {
             <h1>Incident Assistant</h1>
             <p className="subtle">RAG and CRAG incident analysis</p>
           </div>
-          {(stepInfo || submittedNarrative) && <button className="new-chat-btn" onClick={reset} disabled={loading}>
+          {(stepInfo || submittedNarrative || intakeAnswers.length > 0) && <button className="new-chat-btn" onClick={reset} disabled={loading}>
             New analysis
           </button>}
         </header>
 
-        <section className="chat-window" aria-live="polite">
-          {!submittedNarrative && !stepInfo && <div className="message-row assistant-row">
+        <section className="chat-window" aria-live="polite" ref={chatWindowRef}>
+          {!intakeAnswers.length && !stepInfo && <div className="message-row assistant-row">
             <div className="message-avatar">IA</div>
             <div className="message-bubble assistant-bubble">
-              <p>Send me an incident narrative. I will return a concise factual summary, approved taxonomy, parameter scores, and the final HIPO review status.</p>
+              <p>I will collect the information required for HIPO assessment one step at a time. Enter <strong>Unknown</strong> when a fact is unavailable.</p>
             </div>
           </div>}
 
-          {submittedNarrative && <div className="message-row user-row">
+          {submittedNarrative && !intakeAnswers.length && <div className="message-row user-row">
             <div className="message-bubble user-bubble">{submittedNarrative}</div>
+          </div>}
+
+          {intakeQuestions.map((question, index) => {
+            if (index > intakeAnswers.length) return null;
+            if (index === intakeAnswers.length && intakeComplete) return null;
+            return <div className="intake-exchange" key={question.key}>
+              <div className="message-row assistant-row">
+                <div className="message-avatar">IA</div>
+                <div className="message-bubble assistant-bubble">
+                  <span className="question-progress">Step {index + 1} of {intakeQuestions.length}</span>
+                  <p>{question.prompt}</p>
+                </div>
+              </div>
+              {intakeAnswers[index] && <div className="message-row user-row">
+                <div className="message-bubble user-bubble">{intakeAnswers[index]}</div>
+              </div>}
+            </div>;
+          })}
+
+          {intakeComplete && !submittedNarrative && <div className="message-row assistant-row">
+            <div className="message-avatar">IA</div>
+            <div className="message-bubble assistant-bubble intake-review">
+              <span className="question-progress">Ready for analysis</span>
+              <h3>Review the assembled incident narrative</h3>
+              <p>{assembledNarrative}</p>
+              <div className="button-row">
+                <button className="primary-btn" onClick={startAnalysis} disabled={loading}>Run analysis</button>
+                <button className="secondary-btn" onClick={reset} disabled={loading}>Start again</button>
+              </div>
+            </div>
           </div>}
 
           {loading && !pendingResult && <div className="message-row assistant-row">
@@ -274,17 +377,18 @@ function App() {
 
         <section className="chat-composer">
           <label className="sr-only" htmlFor="incident-text">Incident narrative</label>
-          <textarea id="incident-text" value={form.incident_text}
-            onChange={(event) => setForm({ incident_text: event.target.value })}
+          <textarea id="incident-text" value={messageDraft}
+            onChange={(event) => setMessageDraft(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();
-                if (!loading && form.incident_text.trim()) startAnalysis();
+                submitIntakeAnswer();
               }
             }}
-            placeholder="Describe the incident..." disabled={loading || Boolean(stepInfo)} />
-          <button className="send-btn" onClick={startAnalysis}
-            disabled={loading || Boolean(stepInfo) || !form.incident_text.trim()}>
+            placeholder={intakeComplete ? 'Review the narrative above to continue' : 'Type your answer...'}
+            disabled={loading || Boolean(stepInfo) || intakeComplete} />
+          <button className="send-btn" onClick={submitIntakeAnswer}
+            disabled={loading || Boolean(stepInfo) || intakeComplete || !messageDraft.trim()}>
             {loading ? 'Analyzing' : 'Send'}
           </button>
           <p className="composer-hint">Press Enter to send · Shift + Enter for a new line</p>

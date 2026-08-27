@@ -392,6 +392,42 @@ textarea {
   border-top: 1px solid #e2e8f0;
 }
 
+.question-progress {
+  display: block;
+  margin-bottom: 5px;
+  color: #6366f1;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.intake-review {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.intake-review p {
+  color: #475569;
+  line-height: 1.7;
+}
+
+.secondary-btn {
+  padding: 10px 18px;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  color: #334155;
+  background: #ffffff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.secondary-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .typing-bubble {
   display: flex;
   align-items: center;

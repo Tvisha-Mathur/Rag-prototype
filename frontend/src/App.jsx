@@ -6,15 +6,34 @@ import { api, apiErrorMessage } from './api';
 const initialForm = { incident_text: '' };
 const hiddenFrontendFields = new Set(['location']);
 
+const mojibakeReplacements = new Map([
+  ['\u00e2\u20ac\u201d', '\u2014'],
+  ['\u00e2\u20ac\u201c', '\u2013'],
+  ['\u00e2\u20ac\u02dc', '\u2018'],
+  ['\u00e2\u20ac\u2122', '\u2019'],
+  ['\u00e2\u20ac\u0153', '\u201c'],
+  ['\u00e2\u20ac\u009d', '\u201d'],
+  ['\u00e2\u20ac\u00a6', '\u2026'],
+  ['\u00c2\u00a0', ' '],
+]);
+
+function normalizeDisplayText(value) {
+  let text = String(value);
+  mojibakeReplacements.forEach((replacement, corrupted) => {
+    text = text.split(corrupted).join(replacement);
+  });
+  return text;
+}
+
 function renderValue(value) {
   if (value === null || value === undefined || value === '') return '\u2014';
   if (Array.isArray(value)) return value.length ? value.map(renderValue).join(', ') : '\u2014';
-  if (typeof value === 'object') return JSON.stringify(value, null, 2);
-  return String(value);
+  if (typeof value === 'object') return normalizeDisplayText(JSON.stringify(value, null, 2));
+  return normalizeDisplayText(value);
 }
 
 function fieldLabel(key) {
-  return key.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return normalizeDisplayText(key).replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function FieldValue({ value }) {
@@ -22,11 +41,11 @@ function FieldValue({ value }) {
   if (Array.isArray(value)) {
     if (!value.length) return <span className="empty-value">None</span>;
     return <ul className="value-list">{value.map((item, index) =>
-      <li key={index}>{typeof item === 'object' ? <NestedFields value={item} /> : String(item)}</li>
+      <li key={index}>{typeof item === 'object' ? <NestedFields value={item} /> : normalizeDisplayText(item)}</li>
     )}</ul>;
   }
   if (typeof value === 'object') return <NestedFields value={value} />;
-  return <span>{String(value)}</span>;
+  return <span>{normalizeDisplayText(value)}</span>;
 }
 
 function NestedFields({ value }) {
@@ -174,7 +193,7 @@ function App() {
 
           {pendingResult && <>
             <div className="result-card">
-              <h3>{stepInfo.step_title || 'Current step result'}</h3>
+              <h3>{normalizeDisplayText(stepInfo.step_title || 'Current step result')}</h3>
               <div className="analysis-groups">
                 {fields.map(([key, value]) => <section
                   key={key}
@@ -187,7 +206,7 @@ function App() {
             </div>
 
             <div className="confirmation-card">
-              <h3>{stepInfo.question || 'Is this response correct?'}</h3>
+              <h3>{normalizeDisplayText(stepInfo.question || 'Is this response correct?')}</h3>
               {!editingCorrection ? <div className="button-row">
                 <button className="confirm-yes" onClick={() => confirmStep(true)} disabled={loading}>
                   {loading ? 'Saving...' : 'Save response'}

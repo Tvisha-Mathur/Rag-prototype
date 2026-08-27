@@ -260,7 +260,10 @@ Incident: {incident}\nNormalized incident: {normalized}""",
                 HipoFeatures,
                 """Extract grounded incident features for taxonomy and HIPO retrieval. Do not
 invent facts. A credible worst case must follow from the stated hazard, energy, and exposure
-under only a slight change; otherwise return null. Incident: {incident}""",
+under only a slight change; otherwise return null. Keep incident_summary crisp: one or two
+sentences, no more than 55 words. Include every available essential fact: what happened,
+affected party, date/time/location, actual consequence, and immediate response. Omit only
+background detail that does not change those facts. Incident: {incident}""",
                 incident=self._safe_incident(incident_text),
             )
             return result.model_dump()

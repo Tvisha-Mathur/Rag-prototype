@@ -292,6 +292,7 @@ class IncidentWorkflow:
                 summary = llm_analyzer.generate_incident_summary(text)
             except Exception as exc:
                 print(f"Incident summarization failed; using fallback: {exc}")
+        summary = self._concise_incident_summary(summary)
 
         return {
             "date": date_match.group(0) if date_match else None,
@@ -304,25 +305,47 @@ class IncidentWorkflow:
         }
 
     def _fallback_incident_summary(self, text: str) -> str | None:
-        """Return readable complete sentences if Ollama is unavailable."""
+        """Return a short factual summary if the model is unavailable."""
 
         if not text:
             return None
 
         normalized = re.sub(r"\s+", " ", text).strip()
         sentences = re.split(r"(?<=[.!?])\s+", normalized)
-        selected: list[str] = []
+        available = [sentence for sentence in sentences if sentence]
+        selected = available[:1]
+        response_sentence = next(
+            (
+                sentence for sentence in available[1:]
+                if re.search(
+                    r"\b(?:first aid|assisted|isolated|secured|evacuated|notified|reported|"
+                    r"responded|treated|transported|stopped|shut down|action taken)\b",
+                    sentence,
+                    re.IGNORECASE,
+                )
+            ),
+            None,
+        )
+        if response_sentence:
+            selected.append(response_sentence)
+        elif len(available) > 1:
+            selected.append(available[1])
+        return self._concise_incident_summary(" ".join(selected))
 
-        for sentence in sentences:
-            if sentence and sentence not in selected:
-                selected.append(sentence)
-            if len(selected) == 3 or sum(map(len, selected)) >= 600:
-                break
-
-        summary = " ".join(selected).strip()
-        if summary and summary[-1] not in ".!?":
-            summary += "."
-        return summary
+    @staticmethod
+    def _concise_incident_summary(summary: Any, max_words: int = 55) -> str | None:
+        """Enforce the same concise display contract for every summary provider."""
+        if not summary:
+            return None
+        normalized = re.sub(r"\s+", " ", str(summary)).strip()
+        sentences = [item.strip() for item in re.split(r"(?<=[.!?])\s+", normalized) if item.strip()]
+        concise = " ".join(sentences[:2])
+        words = concise.split()
+        if len(words) > max_words:
+            concise = " ".join(words[:max_words]).rstrip(" ,;:-")
+        if concise and concise[-1] not in ".!?":
+            concise += "."
+        return concise
 
     def _build_taxonomy_result(
         self,
@@ -782,7 +805,9 @@ class IncidentWorkflow:
 
         return {
             "factual_summary": (
-                (shared_features or {}).get("incident_summary")
+                self._concise_incident_summary(
+                    (shared_features or {}).get("incident_summary")
+                )
                 or self._fallback_incident_summary(incident_text)
             ),
             "date": facts.get("date"),

@@ -400,7 +400,11 @@ class LLMAnalyzer:
                         "Summarize incident reports accurately and concisely. "
                         "State what happened, where and when when known, who was "
                         "affected, the consequence, and the immediate response. "
-                        "Use 2-4 complete sentences and neutral professional language. "
+                        "Use 1-2 complete sentences and no more than 55 words. "
+                        "Include every available essential fact: what happened, affected party, "
+                        "date/time/location, actual consequence, and immediate response. "
+                        "Omit background detail that does not change the factual event. "
+                        "Use neutral professional language. "
                         "Do not invent, infer, classify, assign blame, or include root causes."
                     ),
                 },

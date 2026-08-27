@@ -25,6 +25,48 @@ def test_missing_explicit_fields_remain_null():
     assert result["room_number"] is None
 
 
+def test_factual_summary_is_limited_to_two_sentences_and_55_words():
+    narrative = (
+        "A guest slipped beside the restaurant entrance and injured an ankle. "
+        "An employee provided first aid and isolated the wet floor. "
+        "The manager later reviewed staffing records and several unrelated background details."
+    )
+
+    summary = IncidentWorkflow()._fallback_incident_summary(narrative)
+
+    assert summary == (
+        "A guest slipped beside the restaurant entrance and injured an ankle. "
+        "An employee provided first aid and isolated the wet floor."
+    )
+    assert len(summary.split()) <= 55
+
+
+def test_fallback_summary_prioritizes_immediate_response_sentence():
+    narrative = (
+        "A guest slipped beside the restaurant entrance and injured an ankle. "
+        "Several employees had started their evening shift. "
+        "An employee provided first aid and isolated the wet floor."
+    )
+
+    summary = IncidentWorkflow()._fallback_incident_summary(narrative)
+
+    assert "injured an ankle" in summary
+    assert "provided first aid and isolated the wet floor" in summary
+    assert "evening shift" not in summary
+
+
+def test_cloud_feature_summary_is_concisely_capped_before_display():
+    workflow = IncidentWorkflow()
+    long_summary = " ".join(f"detail{index}" for index in range(60))
+
+    result = workflow._build_facts_result(
+        "A guest slipped.", shared_features={"incident_summary": long_summary}
+    )
+
+    assert len(result["incident_summary"].split()) == 55
+    assert result["incident_summary"].endswith(".")
+
+
 def test_final_location_prefers_room_number_over_area():
     facts = IncidentWorkflow()._build_facts_result(
         "A guest slipped in the east corridor near room 204."

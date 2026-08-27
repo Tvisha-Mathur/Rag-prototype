@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { api, apiErrorMessage } from './api';
 
 const initialForm = { incident_text: '' };
-const hiddenFrontendFields = new Set(['location']);
+const hiddenFrontendFields = new Set(['location', 'hipo_classification']);
 
 const mojibakeReplacements = new Map([
   ['\u00e2\u20ac\u201d', '\u2014'],
@@ -164,7 +164,7 @@ function App() {
   const fields = Object.entries(pendingResult || {}).flatMap(([key, value]) => {
     if (hiddenFrontendFields.has(key)) return [];
     if (key !== 'diagnostics') return [[key, value]];
-    return [['hipo_review', value?.hipo_review_required ? 'Yes' : 'No']];
+    return [['final_hipo_review', value?.hipo_review_required ? 'Yes' : 'No']];
   });
 
   return (

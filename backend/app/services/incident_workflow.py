@@ -771,7 +771,7 @@ class IncidentWorkflow:
         affected_value = affected.get("affected_party_type") or "Unknown"
         consequence = affected.get("injury_or_consequence")
         if consequence:
-            affected_value = f"{affected_value} â€” {consequence}"
+            affected_value = f"{affected_value} \u2014 {consequence}"
         event_type = self._build_actual_near_miss_result(incident_text)["classification"]
         hipo_value = hipo.get("hipo_assessment")
         scores = hipo.get("risk_feature_scores", {})

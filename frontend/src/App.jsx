@@ -7,8 +7,8 @@ const initialForm = { incident_text: '' };
 const hiddenFrontendFields = new Set(['location']);
 
 function renderValue(value) {
-  if (value === null || value === undefined || value === '') return 'â€”';
-  if (Array.isArray(value)) return value.length ? value.map(renderValue).join(', ') : 'â€”';
+  if (value === null || value === undefined || value === '') return '\u2014';
+  if (Array.isArray(value)) return value.length ? value.map(renderValue).join(', ') : '\u2014';
   if (typeof value === 'object') return JSON.stringify(value, null, 2);
   return String(value);
 }
